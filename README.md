@@ -25,3 +25,12 @@ streamlit run app.py
 - 손절가: 최소 ATR×2 아래. 지지 구간 하단이 그보다 멀고 −12% 이내면 그 값.
 - 바닥·천장: TradingView "Support Resistance Channels" 지표를 단순화한 계산.
 - 신호와 설명은 숫자에서 규칙으로 자동 작성되며 실적·뉴스는 반영하지 않습니다.
+
+## 추가 기능 설정 (Streamlit Cloud → 앱 Settings → Secrets)
+
+```toml
+PORTFOLIO_SHEET = "https://docs.google.com/spreadsheets/d/…"   # 포트폴리오 탭 (시트는 '링크가 있는 모든 사용자: 뷰어')
+ANTHROPIC_API_KEY = "sk-ant-…"                                  # 뉴스 AI 요약 (없으면 헤드라인만 표시)
+```
+
+포트폴리오 시트 첫 줄: `ticker, amount_usd, entry_price, entry_date, note`. `entry_price`가 비면 `entry_date` 종가를 씁니다.
