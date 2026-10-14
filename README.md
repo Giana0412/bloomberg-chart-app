@@ -32,7 +32,7 @@ streamlit run app.py
 PORTFOLIO_SHEET = "https://docs.google.com/spreadsheets/d/…"   # 포트폴리오 탭 (시트는 '링크가 있는 모든 사용자: 뷰어')
 GEMINI_API_KEY = "…"                                            # 뉴스 AI 요약 + 팀 챗봇 (Google AI Studio 키)
 GEMINI_MODEL = "gemini-flash-latest"                            # 선택
-CHAT_CONTEXT_DOC = "https://docs.google.com/document/d/…"       # 챗봇 배경 지식 (팀 전략 대화 기록, 링크 뷰어 공유)
+CHAT_CONTEXT_DOC = "https://docs.google.com/document/d/…"       # 챗봇 배경 지식 (여러 개면 쉼표로 구분, 링크 뷰어 공유)
 ```
 
 포트폴리오 시트 첫 줄: `ticker, amount_usd, entry_price, entry_date, note`. `entry_price`가 비면 `entry_date` 종가를 씁니다.

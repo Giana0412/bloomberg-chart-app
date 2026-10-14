@@ -534,13 +534,15 @@ def tab_radar() -> None:
 # ---------- chatbot tab ----------
 @st.cache_data(ttl=600, show_spinner=False)
 def chat_context() -> str | None:
-    doc = secret("CHAT_CONTEXT_DOC")
-    if not doc:
-        return None
-    try:
-        return chatbot.fetch_doc_text(doc)
-    except Exception:
-        return None
+    """CHAT_CONTEXT_DOC: Google Doc 링크 하나 또는 여러 개(쉼표·줄바꿈으로 구분)."""
+    docs = [d for d in re.split(r"[,\s]+", secret("CHAT_CONTEXT_DOC") or "") if d]
+    texts = []
+    for d in docs:
+        try:
+            texts.append(chatbot.fetch_doc_text(d))
+        except Exception:
+            continue  # 공유 설정이 안 된 문서는 건너뛴다
+    return "\n\n---\n\n".join(texts) or None
 
 
 def portfolio_text() -> str:
