@@ -18,6 +18,7 @@ import yfinance as yf
 import events
 import news
 import portfolio as pf
+import screen_import
 from analysis import Analysis, analyze
 from plan import PLAN
 
@@ -327,20 +328,128 @@ def tab_portfolio() -> None:
 
 
 # ---------- earnings radar tab ----------
-def tab_radar() -> None:
-    st.markdown("실적 발표일과 **옵션 시장이 예상하는 변동폭**(만기까지의 ATM 스트래들 가격 ÷ 주가)을 보여 줍니다. "
-                "잭팟 기준은 ±15% 이상, 대회 종료(11/13) 전 발표입니다.")
-    base = list(PLAN)
+@st.cache_data(ttl=21600, show_spinner=False)
+def calendar(start: dt.date, end: dt.date, min_cap: float) -> pd.DataFrame:
+    return events.earnings_calendar(start, end, min_cap)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def import_screen(source: str | bytes, filename: str = "") -> pd.DataFrame:
+    rows = screen_import.read_export(source, filename)
+    mapping = screen_import.map_tickers(rows["Ticker"].tolist())
+    rows.insert(1, "Yahoo", rows["Ticker"].map(mapping))
+    return rows
+
+
+def team_tickers() -> set[str]:
+    out = set(PLAN)
     sheet = secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
     if sheet:
         try:
-            base += [t for t in pf.read_positions(sheet)["ticker"] if t not in base]
+            out |= set(pf.read_positions(sheet)["ticker"])
         except Exception:
             pass
+    return out
+
+
+def add_to_radar(tickers: list[str]) -> None:
+    cur = st.session_state.setdefault("radar_extra", [])
+    cur += [t for t in tickers if t and t not in cur]
+
+
+def section_calendar() -> None:
+    st.subheader("실적 캘린더")
+    today = dt.date.today()
+    monday = today - dt.timedelta(days=today.weekday())
+    weeks = []
+    w = monday
+    while w <= events.CHALLENGE_END:
+        weeks.append(w)
+        w += dt.timedelta(days=7)
+    c1, c2, c3 = st.columns([2, 2, 2])
+    week = c1.selectbox("주", weeks, format_func=lambda d: f"{d:%m/%d} ~ {d + dt.timedelta(days=4):%m/%d} 주")
+    min_cap = c2.select_slider("시가총액 하한", options=[1e9, 2e9, 5e9, 1e10, 5e10],
+                               value=2e9, format_func=lambda v: f"${v / 1e9:,.0f}B")
+    us_only = c3.toggle("해외 OTC 제외", value=True, help="BWAGF처럼 F/Y로 끝나는 5글자 해외 장외 티커를 숨깁니다.")
+    try:
+        cal = calendar(week, week + dt.timedelta(days=4), min_cap)
+    except Exception as e:
+        st.error(f"캘린더를 받지 못했습니다 ({type(e).__name__}). 잠시 뒤 다시 시도하세요.")
+        return
+    if us_only:
+        cal = cal[~cal["symbol"].str.fullmatch(r"[A-Z]{4}[FY]")]
+    team = team_tickers()
+    cols = st.columns(5)
+    for i in range(5):
+        d = week + dt.timedelta(days=i)
+        day = cal[cal["date"] == d]
+        with cols[i]:
+            with st.container(border=True):
+                st.markdown(f"**{'월화수목금'[i]} {d:%m/%d}** · {len(day)}개")
+                show_n = 15
+                for _, r in day.head(show_n).iterrows():
+                    tag = {"BMO": "장전", "AMC": "장후"}.get(r["timing"], "")
+                    name = f":blue-badge[{r['symbol']}]" if r["symbol"] in team else f"`{r['symbol']}`"
+                    st.markdown(f"{name} <span style='color:gray;font-size:0.8em'>{tag} ${r['cap'] / 1e9:,.0f}B</span>",
+                                unsafe_allow_html=True)
+                if len(day) > show_n:
+                    with st.expander(f"+{len(day) - show_n}개 더"):
+                        st.markdown(" ".join(f"`{x}`" for x in day["symbol"].iloc[show_n:]))
+    st.caption("파란 배지는 팀 계획·보유 종목. 장전(BMO)은 개장 전, 장후(AMC)는 마감 후 발표. Yahoo 기준이며 날짜가 바뀔 수 있으니 ERN <GO>로 확인하세요.")
+    pick = st.multiselect("레이더에 추가할 종목", cal["symbol"].tolist(), placeholder="이 주 실적 종목 중 골라서 아래 레이더로 보내기")
+    if pick and st.button("선택 종목 레이더에 추가"):
+        add_to_radar(pick)
+        st.success(f"{len(pick)}종목을 레이더에 추가했습니다.")
+
+
+def section_import() -> None:
+    st.subheader("스크린 가져오기")
+    st.caption("블룸버그 EQS 결과를 엑셀로 내보낸 파일이나 그 구글 시트 링크를 넣으면 티커를 Yahoo 형식으로 바꿔 줍니다. 시트는 '링크가 있는 모든 사용자: 뷰어'여야 합니다.")
+    c1, c2 = st.columns(2)
+    url = c1.text_input("구글 시트 링크", key="screen_url", placeholder="https://docs.google.com/spreadsheets/d/…")
+    up = c2.file_uploader("또는 파일 (xlsx/csv)", type=["xlsx", "xls", "csv"], key="screen_file")
+    if not url and not up:
+        return
+    try:
+        with st.spinner("티커 확인 중 (20초 정도)"):
+            rows = import_screen(up.getvalue(), up.name) if up else import_screen(url)
+    except Exception as e:
+        st.error(f"스크린을 읽지 못했습니다. 첫 열이 'XXXX US Equity' 형식인지, 공유 설정이 맞는지 확인하세요. ({e})")
+        return
+    us_only = st.toggle("미국 종목만", value=True, help="옵션 데이터(예상 변동폭)는 미국 종목만 나옵니다.")
+    view = rows[rows["Ticker"].str.contains(r" (?:US|UN|UW|UQ) Equity$")] if us_only else rows
+    missing = rows[rows["Yahoo"].isna()]["Ticker"].tolist()
+    st.write(f"{len(rows)}종목 중 {rows['Yahoo'].notna().sum()}개 변환 · 지금 표시 {len(view)}개")
+    st.dataframe(view, hide_index=True, width="stretch")
+    if missing:
+        st.caption("Yahoo에서 찾지 못한 종목: " + ", ".join(missing) + " (말레이시아·인도 종목은 기호 체계가 달라 수동 확인 필요)")
+    ok = view["Yahoo"].dropna().tolist()
+    b1, b2 = st.columns(2)
+    if b1.button(f"레이더에 추가 ({len(ok)}종목)", disabled=not ok):
+        add_to_radar(ok)
+        st.success("아래 레이더 표에 추가했습니다. '레이더 실행'을 누르세요.")
+    if b2.button("차트 검색 탭에 추가", disabled=not ok):
+        extra = st.session_state.setdefault("extra", [])
+        extra[:0] = [t for t in ok if t not in extra and t not in PLAN]
+        st.query_params["t"] = ",".join(extra)
+        st.success("차트 검색 탭의 '검색한 종목'에 추가했습니다.")
+
+
+def section_radar() -> None:
+    st.subheader("실적 레이더")
+    st.markdown("실적 발표일과 **옵션 시장이 예상하는 변동폭**(만기까지의 ATM 스트래들 가격 ÷ 주가)을 보여 줍니다. "
+                "잭팟 기준은 ±15% 이상, 대회 종료(11/13) 전 발표, 상승 추세입니다.")
+    base = list(PLAN) + [t for t in sorted(team_tickers()) if t not in PLAN]
+    base += [t for t in st.session_state.get("radar_extra", []) if t not in base]
     extra = st.text_input("추가로 볼 후보 티커 (쉼표로 구분)", placeholder="예: ALAB, CRDO, RBRK")
     tickers = base + [t for t in re.split(r"[,\s]+", extra.upper()) if t and t not in base]
-    if not st.button(f"레이더 실행 ({len(tickers)}종목)", type="primary") and not st.session_state.get("radar"):
-        st.caption("옵션 데이터를 종목마다 받아서 1~2분 걸릴 수 있습니다. 결과는 1시간 저장됩니다.")
+    c1, c2 = st.columns([3, 1])
+    run = c1.button(f"레이더 실행 ({len(tickers)}종목)", type="primary")
+    if c2.button("추가한 종목 비우기"):
+        st.session_state.radar_extra = []
+        st.rerun()
+    if not run and not st.session_state.get("radar"):
+        st.caption("옵션 데이터를 종목마다 받아서 종목 수에 따라 1~3분 걸립니다. 결과는 1시간 저장됩니다.")
         return
     st.session_state.radar = True
     rows = []
@@ -361,20 +470,33 @@ def tab_radar() -> None:
         jackpot = in_window and mv is not None and mv >= 15 and trend == "상승" and (a.r126 or 0) > 0
         rows.append({"종목": t, "실적일": ed, "D-day": dday, "대회 기간 안": in_window,
                      "예상 변동폭(±%)": mv, "옵션 만기": ev.get("expiry"),
-                     "6개월(%)": a.r126 if a else None, "추세(50일선)": trend,
+                     "6개월(%)": a.r126 if a else None, "RSI": a.rsi if a else None, "추세(50일선)": trend,
                      "잭팟 기준 충족": jackpot})
     bar.empty()
-    df = pd.DataFrame(rows).sort_values(["대회 기간 안", "실적일"], ascending=[False, True], na_position="last")
+    if not rows:
+        st.warning("결과가 없습니다.")
+        return
+    df = pd.DataFrame(rows).sort_values(["잭팟 기준 충족", "대회 기간 안", "실적일"], ascending=[False, False, True], na_position="last")
     st.dataframe(df, hide_index=True, width="stretch", column_config={
         "실적일": st.column_config.DateColumn(format="MM/DD"),
         "예상 변동폭(±%)": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=30),
         "6개월(%)": st.column_config.NumberColumn(format="%+.1f"),
+        "RSI": st.column_config.NumberColumn(format="%.0f"),
     })
     st.caption("예상 변동폭은 실적일 이후 첫 만기까지의 전체 기간을 포함해 실적 하루 움직임보다 조금 큽니다. "
-               "실적일은 Yahoo 추정치가 섞여 있으니 블룸버그 ERN <GO>로 확인하세요. 미국 외 종목은 옵션 데이터가 없을 수 있습니다.")
+               "예상 변동폭이 아주 작은데 최근 급등했다면 인수합병 등으로 가격이 묶였을 수 있으니 뉴스를 확인하세요. "
+               "미국 외 종목은 옵션 데이터가 없을 수 있습니다.")
     if st.button("다시 계산"):
         event.clear()
         st.rerun()
+
+
+def tab_radar() -> None:
+    section_calendar()
+    st.divider()
+    section_import()
+    st.divider()
+    section_radar()
 
 
 # ---------- page ----------
