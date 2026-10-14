@@ -5,6 +5,8 @@ Secrets (Streamlit Cloud → App settings → Secrets, or .streamlit/secrets.tom
   PORTFOLIO_SHEET = "<Google Sheet URL>"   # 포트폴리오 탭
   GEMINI_API_KEY = "..."                  # AI 뉴스 요약 (Google AI Studio)
   GEMINI_MODEL = "gemini-flash-latest"     # 선택
+  ANTHROPIC_API_KEY = "sk-ant-..."         # 팀 챗봇 (Claude)
+  CHAT_CONTEXT_DOC = "<Google Doc URL>"    # 챗봇 배경 지식 (팀 전략 대화 기록)
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+import chatbot
 import events
 import news
 import portfolio as pf
@@ -508,15 +511,104 @@ def tab_radar() -> None:
     section_radar()
 
 
+# ---------- chatbot tab ----------
+@st.cache_data(ttl=600, show_spinner=False)
+def chat_context() -> str | None:
+    doc = secret("CHAT_CONTEXT_DOC")
+    if not doc:
+        return None
+    try:
+        return chatbot.fetch_doc_text(doc)
+    except Exception:
+        return None
+
+
+def portfolio_text() -> str:
+    sheet = secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
+    if not sheet:
+        return "포트폴리오 시트가 설정되지 않음"
+    pos = pf.read_positions(sheet)
+    closes = {t: close_usd(t) for t in pos["ticker"].unique()}
+    closes[pf.BENCH] = close_usd(pf.BENCH)
+    table, s = pf.value(pos, closes, CHALLENGE_START)
+    lines = [f"총 평가액 ${s['total']:,.0f} ({s['port_ret']:+.2f}%), 지수({pf.BENCH}) {s['bench_ret']:+.2f}%, "
+             f"지수 대비 {s['rel']:+.2f}%p, 현금 ${s['cash']:,.0f}"]
+    for _, r in table.iterrows():
+        a, _ = analysis_for(r["ticker"])
+        lines.append(f"- {r['ticker']}: 투자 ${r['amount_usd']:,.0f}, 매수가 {r.get('entry_used', float('nan')):.2f}, "
+                     f"현재 {r.get('last', float('nan')):.2f}, 수익률 {r.get('ret', float('nan')):+.2f}%, "
+                     f"비중 {r.get('weight_now', float('nan')):.1f}%"
+                     + (f", 손절가 {a.stop:.2f}" if a else ""))
+    return "\n".join(lines)
+
+
+def tab_chat() -> None:
+    key = secret("ANTHROPIC_API_KEY")
+    if not key:
+        st.info("팀 챗봇을 쓰려면 앱 Secrets에 ANTHROPIC_API_KEY를 넣으세요.")
+        return
+    ctx = chat_context()
+    st.caption(("팀 전략 대화 기록을 참고해서 답합니다. " if ctx else "팀 전략 대화 기록이 아직 연결되지 않았습니다(CHAT_CONTEXT_DOC). ")
+               + "가격·손절가·실적일·포트폴리오는 질문할 때마다 앱 데이터를 새로 조회합니다.")
+    hist = st.session_state.setdefault("chat_history", [])
+    for m in hist:
+        if m["role"] == "user" and isinstance(m["content"], str):
+            st.chat_message("user").markdown(m["content"])
+        elif m["role"] == "assistant":
+            text = "".join(b.text for b in m["content"] if getattr(b, "type", "") == "text").strip()
+            tools = [f"{b.name}({', '.join(str(v) for v in b.input.values())})" for b in m["content"] if getattr(b, "type", "") == "tool_use"]
+            if text or tools:
+                with st.chat_message("assistant"):
+                    if tools:
+                        st.caption("조회: " + " · ".join(tools))
+                    if text:
+                        st.markdown(text)
+    c1, c2 = st.columns([5, 1])
+    if c2.button("대화 지우기") and hist:
+        st.session_state.chat_history = []
+        st.rerun()
+    q = st.chat_input("예: TWLO 지금 손절가 어디야? / 다음 주 실적 중 잭팟 후보 있어?")
+    if not q:
+        return
+    st.chat_message("user").markdown(q)
+    deps = {
+        "analyze": lambda t: analysis_for(t)[0],
+        "event": event,
+        "portfolio": portfolio_text,
+        "calendar": calendar,
+        "headlines": heads,
+    }
+    with st.chat_message("assistant"):
+        status = st.status("생각하는 중", expanded=False)
+        n0 = len(hist)
+        try:
+            answer = chatbot.ask(key, hist, q, chatbot.make_tools(deps), chatbot.system_prompt(PLAN, ctx),
+                                 on_tool=lambda n, i: status.write(f"조회: {n} {i}"))
+            status.update(label="완료", state="complete")
+        except Exception as e:
+            status.update(label="실패", state="error")
+            del hist[n0:]  # 실패한 질문은 기록에서 빼서 다음 질문이 막히지 않게 한다
+            if isinstance(e, chatbot.anthropic.AuthenticationError):
+                st.error("Claude API 키가 맞지 않습니다. 앱 Secrets의 ANTHROPIC_API_KEY를 확인하세요.")
+            elif isinstance(e, chatbot.anthropic.RateLimitError):
+                st.error("Claude 사용 한도에 걸렸습니다. 잠시 뒤 다시 물어봐 주세요.")
+            else:
+                st.error(f"답변을 만들지 못했습니다: {type(e).__name__}: {str(e)[:200]}")
+            return
+        st.markdown(answer)
+
+
 # ---------- page ----------
 st.title("티커 차트 검색")
 st.caption("Bloomberg Trading Challenge 팀 도구 · Yahoo Finance 데이터 (장중 약 15분 지연, 5분마다 갱신) · 신호와 설명은 숫자에서 규칙으로 자동 작성됩니다")
-t1, t2, t3 = st.tabs(["차트 검색", "포트폴리오", "실적 레이더"])
+t1, t2, t3, t4 = st.tabs(["차트 검색", "포트폴리오", "실적 레이더", "팀 챗봇"])
 with t1:
     tab_charts()
 with t2:
     tab_portfolio()
 with t3:
     tab_radar()
+with t4:
+    tab_chat()
 st.divider()
 st.caption("손절가: 최소 ATR×2, 지지 구간 하단이 더 멀고 −12% 이내면 그 값. 바닥·천장은 TradingView SR 채널 지표를 단순화한 계산입니다. 매매 결정은 팀 규칙을 따르세요.")
