@@ -30,7 +30,8 @@ streamlit run app.py
 
 ```toml
 PORTFOLIO_SHEET = "https://docs.google.com/spreadsheets/d/…"   # 포트폴리오 탭 (시트는 '링크가 있는 모든 사용자: 뷰어')
-ANTHROPIC_API_KEY = "sk-ant-…"                                  # 뉴스 AI 요약 (없으면 헤드라인만 표시)
+GEMINI_API_KEY = "…"                                            # 뉴스 AI 요약 (Google AI Studio 키, 없으면 헤드라인만 표시)
+GEMINI_MODEL = "gemini-flash-latest"                            # 선택
 ```
 
 포트폴리오 시트 첫 줄: `ticker, amount_usd, entry_price, entry_date, note`. `entry_price`가 비면 `entry_date` 종가를 씁니다.

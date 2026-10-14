@@ -1,12 +1,13 @@
-"""Recent headlines (Yahoo Finance) summarized in Korean by Claude."""
+"""Recent headlines (Yahoo Finance) summarized in Korean by Gemini."""
 from __future__ import annotations
 
 import datetime as dt
 
-import anthropic
 import yfinance as yf
+from google import genai
+from google.genai import types
 
-MODEL = "claude-opus-5-5"
+DEFAULT_MODEL = "gemini-flash-latest"  # 최신 Flash 모델을 가리키는 별칭
 
 SYSTEM = (
     "You help a Korean university team in a stock-picking competition. "
@@ -31,21 +32,16 @@ def headlines(ticker: str, n: int = 10) -> list[dict]:
     return out
 
 
-def summarize(ticker: str, items: list[dict], api_key: str) -> str:
-    client = anthropic.Anthropic(api_key=api_key)
+def summarize(ticker: str, items: list[dict], api_key: str, model: str | None = None) -> str:
+    client = genai.Client(api_key=api_key)
     lines = "\n".join(
         f"- [{i['time']:%Y-%m-%d}] {i['title']} ({i['publisher']})" if i["time"] else f"- {i['title']} ({i['publisher']})"
         for i in items
     )
-    response = client.beta.messages.create(
-        model=MODEL,
-        max_tokens=16000,
-        output_config={"effort": "low"},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        system=SYSTEM,
-        messages=[{"role": "user", "content": f"Stock: {ticker}\nHeadlines:\n{lines}"}],
+    response = client.models.generate_content(
+        model=model or DEFAULT_MODEL,
+        contents=f"Stock: {ticker}\nHeadlines:\n{lines}",
+        config=types.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.2),
     )
-    if response.stop_reason == "refusal":
-        return "요약을 만들 수 없었습니다. 아래 헤드라인을 직접 확인하세요."
-    return "".join(b.text for b in response.content if b.type == "text").strip()
+    text = (response.text or "").strip()
+    return text or "요약을 만들 수 없었습니다. 아래 헤드라인을 직접 확인하세요."

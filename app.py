@@ -3,7 +3,8 @@
 Run locally:  streamlit run app.py
 Secrets (Streamlit Cloud → App settings → Secrets, or .streamlit/secrets.toml):
   PORTFOLIO_SHEET = "<Google Sheet URL>"   # 포트폴리오 탭
-  ANTHROPIC_API_KEY = "sk-ant-..."         # AI 뉴스 요약
+  GEMINI_API_KEY = "..."                  # AI 뉴스 요약 (Google AI Studio)
+  GEMINI_MODEL = "gemini-flash-latest"     # 선택
 """
 from __future__ import annotations
 
@@ -84,7 +85,7 @@ def heads(ticker: str) -> list[dict]:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def ai_summary(ticker: str, titles: tuple[str, ...], _items: list[dict]) -> str:
-    return news.summarize(ticker, _items, secret("ANTHROPIC_API_KEY"))
+    return news.summarize(ticker, _items, secret("GEMINI_API_KEY"), secret("GEMINI_MODEL"))
 
 
 def analysis_for(t: str) -> tuple[Analysis | None, str]:
@@ -137,14 +138,14 @@ def news_box(t: str) -> None:
         if not items:
             st.write("최근 뉴스가 없습니다.")
             return
-        if secret("ANTHROPIC_API_KEY"):
+        if secret("GEMINI_API_KEY"):
             try:
-                with st.spinner("Claude가 요약하는 중"):
+                with st.spinner("Gemini가 요약하는 중"):
                     st.markdown(ai_summary(t, tuple(i["title"] for i in items), items))
             except Exception as e:
-                st.warning(f"AI 요약 실패: {type(e).__name__}. 헤드라인을 직접 확인하세요.")
+                st.warning(f"AI 요약 실패: {type(e).__name__}: {str(e)[:200]}. 헤드라인을 직접 확인하세요.")
         else:
-            st.caption("AI 요약을 쓰려면 앱 Secrets에 ANTHROPIC_API_KEY를 넣으세요.")
+            st.caption("AI 요약을 쓰려면 앱 Secrets에 GEMINI_API_KEY를 넣으세요.")
         for i in items:
             when = f"{i['time']:%m/%d %H:%M} · " if i["time"] else ""
             st.markdown(f"- [{i['title']}]({i['link']}) <span style='color:gray;font-size:0.85em'>{when}{i['publisher']}</span>",
