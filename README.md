@@ -30,9 +30,8 @@ streamlit run app.py
 
 ```toml
 PORTFOLIO_SHEET = "https://docs.google.com/spreadsheets/d/…"   # 포트폴리오 탭 (시트는 '링크가 있는 모든 사용자: 뷰어')
-GEMINI_API_KEY = "…"                                            # 뉴스 AI 요약 (Google AI Studio 키, 없으면 헤드라인만 표시)
+GEMINI_API_KEY = "…"                                            # 뉴스 AI 요약 + 팀 챗봇 (Google AI Studio 키)
 GEMINI_MODEL = "gemini-flash-latest"                            # 선택
-ANTHROPIC_API_KEY = "sk-ant-…"                                  # 팀 챗봇 (Claude)
 CHAT_CONTEXT_DOC = "https://docs.google.com/document/d/…"       # 챗봇 배경 지식 (팀 전략 대화 기록, 링크 뷰어 공유)
 ```
 

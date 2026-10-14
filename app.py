@@ -5,7 +5,6 @@ Secrets (Streamlit Cloud → App settings → Secrets, or .streamlit/secrets.tom
   PORTFOLIO_SHEET = "<Google Sheet URL>"   # 포트폴리오 탭
   GEMINI_API_KEY = "..."                  # AI 뉴스 요약 (Google AI Studio)
   GEMINI_MODEL = "gemini-flash-latest"     # 선택
-  ANTHROPIC_API_KEY = "sk-ant-..."         # 팀 챗봇 (Claude)
   CHAT_CONTEXT_DOC = "<Google Doc URL>"    # 챗봇 배경 지식 (팀 전략 대화 기록)
 """
 from __future__ import annotations
@@ -543,26 +542,19 @@ def portfolio_text() -> str:
 
 
 def tab_chat() -> None:
-    key = secret("ANTHROPIC_API_KEY")
+    key = secret("GEMINI_API_KEY")
     if not key:
-        st.info("팀 챗봇을 쓰려면 앱 Secrets에 ANTHROPIC_API_KEY를 넣으세요.")
+        st.info("팀 챗봇을 쓰려면 앱 Secrets에 GEMINI_API_KEY를 넣으세요.")
         return
     ctx = chat_context()
     st.caption(("팀 전략 대화 기록을 참고해서 답합니다. " if ctx else "팀 전략 대화 기록이 아직 연결되지 않았습니다(CHAT_CONTEXT_DOC). ")
-               + "가격·손절가·실적일·포트폴리오는 질문할 때마다 앱 데이터를 새로 조회합니다.")
+               + "가격·손절가·실적일·포트폴리오는 질문할 때마다 앱 데이터를 새로 조회합니다. (Gemini)")
     hist = st.session_state.setdefault("chat_history", [])
     for m in hist:
-        if m["role"] == "user" and isinstance(m["content"], str):
-            st.chat_message("user").markdown(m["content"])
-        elif m["role"] == "assistant":
-            text = "".join(b.text for b in m["content"] if getattr(b, "type", "") == "text").strip()
-            tools = [f"{b.name}({', '.join(str(v) for v in b.input.values())})" for b in m["content"] if getattr(b, "type", "") == "tool_use"]
-            if text or tools:
-                with st.chat_message("assistant"):
-                    if tools:
-                        st.caption("조회: " + " · ".join(tools))
-                    if text:
-                        st.markdown(text)
+        with st.chat_message("user" if m["role"] == "user" else "assistant"):
+            if m.get("tools"):
+                st.caption("조회: " + " · ".join(m["tools"]))
+            st.markdown(m["text"])
     c1, c2 = st.columns([5, 1])
     if c2.button("대화 지우기") and hist:
         st.session_state.chat_history = []
@@ -579,22 +571,22 @@ def tab_chat() -> None:
         "headlines": heads,
     }
     with st.chat_message("assistant"):
-        status = st.status("생각하는 중", expanded=False)
-        n0 = len(hist)
         try:
-            answer = chatbot.ask(key, hist, q, chatbot.make_tools(deps), chatbot.system_prompt(PLAN, ctx),
-                                 on_tool=lambda n, i: status.write(f"조회: {n} {i}"))
-            status.update(label="완료", state="complete")
+            with st.spinner("데이터 조회하고 생각하는 중"):
+                answer, called = chatbot.ask(key, hist, q, chatbot.make_tools(deps),
+                                             chatbot.system_prompt(PLAN, ctx), secret("GEMINI_MODEL"))
         except Exception as e:
-            status.update(label="실패", state="error")
-            del hist[n0:]  # 실패한 질문은 기록에서 빼서 다음 질문이 막히지 않게 한다
-            if isinstance(e, chatbot.anthropic.AuthenticationError):
-                st.error("Claude API 키가 맞지 않습니다. 앱 Secrets의 ANTHROPIC_API_KEY를 확인하세요.")
-            elif isinstance(e, chatbot.anthropic.RateLimitError):
-                st.error("Claude 사용 한도에 걸렸습니다. 잠시 뒤 다시 물어봐 주세요.")
+            code = getattr(e, "code", None)
+            if code in (429, 503):
+                st.error("Gemini 서버가 지금 붐벼서 답하지 못했습니다(예비 모델까지 시도함). 잠시 뒤 다시 물어봐 주세요.")
+            elif code in (400, 401, 403):
+                st.error("Gemini API 키가 맞지 않거나 권한이 없습니다. 앱 Secrets의 GEMINI_API_KEY를 확인하세요.")
             else:
                 st.error(f"답변을 만들지 못했습니다: {type(e).__name__}: {str(e)[:200]}")
             return
+        hist[-1]["tools"] = called
+        if called:
+            st.caption("조회: " + " · ".join(called))
         st.markdown(answer)
 
 

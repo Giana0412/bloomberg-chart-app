@@ -1,4 +1,4 @@
-"""Team chatbot: Claude with the team's strategy log as context and the app's data as tools."""
+"""Team chatbot: Gemini with the team's strategy log as context and the app's data as tools."""
 from __future__ import annotations
 
 import datetime as dt
@@ -6,10 +6,10 @@ import re
 import urllib.request
 from typing import Callable
 
-import anthropic
-from anthropic import beta_tool
+from google import genai
+from google.genai import errors, types
 
-MODEL = "claude-opus-5-5"
+from news import DEFAULT_MODEL, FALLBACK_MODELS
 
 SYSTEM_BASE = """너는 Bloomberg Global Trading Challenge에 나간 한국 대학생 팀의 투자 도우미야.
 - 대회: 가상 $1M, 롱온리, 레버리지 없음, 단일 종목 20% 상한, WLS 지수 편입 종목만, 순위는 WLS 대비 상대 수익. 기간 2026-10-12 ~ 2026-11-13.
@@ -30,11 +30,10 @@ def fetch_doc_text(url_or_id: str) -> str:
         return r.read().decode("utf-8", errors="replace")
 
 
-def make_tools(deps: dict[str, Callable]) -> list:
+def make_tools(deps: dict[str, Callable]) -> list[Callable]:
     """deps: analyze(ticker)->Analysis|None, event(ticker)->dict, portfolio()->str,
     calendar(start, end, min_cap)->DataFrame, headlines(ticker)->list[dict]."""
 
-    @beta_tool
     def chart_analysis(ticker: str) -> str:
         """현재 차트 상태: 가격, 추세, RSI, 손절가, 바닥·천장, 자동 신호, 쉬운 설명.
 
@@ -51,7 +50,6 @@ def make_tools(deps: dict[str, Callable]) -> list:
                 f"손절가 {a.stop:.2f} ({(a.stop / a.last - 1) * 100:+.1f}%), 바닥 {a.sup}, 천장 {a.res}. "
                 f"신호: {sig}. 설명: {a.easy} 할 일: {a.todo}")
 
-    @beta_tool
     def earnings_event(ticker: str) -> str:
         """다음 실적 발표일과 옵션 시장이 예상하는 변동폭(ATM 스트래들, 첫 만기까지).
 
@@ -63,12 +61,10 @@ def make_tools(deps: dict[str, Callable]) -> list:
         return (f"{ticker.upper()}: 실적일 {e.get('earnings')}, 옵션 만기 {e.get('expiry')}, "
                 f"예상 변동폭 {'없음' if mv is None else f'±{mv:.1f}%'}, 현재가 {e.get('price')}")
 
-    @beta_tool
     def team_portfolio() -> str:
         """팀 포트폴리오 현황: 총 평가액, 지수 대비 수익, 종목별 비중·수익률·손절가."""
         return deps["portfolio"]()
 
-    @beta_tool
     def earnings_calendar(start: str, end: str, min_cap_billion: float = 2.0) -> str:
         """기간 내 미국 실적 발표 종목 (시가총액 큰 순, 날짜별 최대 25개).
 
@@ -86,7 +82,6 @@ def make_tools(deps: dict[str, Callable]) -> list:
             out.append(f"{d}: " + ", ".join(f"{r.symbol}({r.timing}, ${r.cap / 1e9:.0f}B)" for r in g.head(25).itertuples()))
         return "\n".join(out)
 
-    @beta_tool
     def news_headlines(ticker: str) -> str:
         """종목의 최근 뉴스 헤드라인 (Yahoo).
 
@@ -112,39 +107,39 @@ def system_prompt(plan: dict, context_text: str | None) -> str:
     return "\n\n".join(parts)
 
 
-def ask(api_key: str, history: list, question: str, tools: list, system: str,
-        on_tool: Callable[[str, dict], None] | None = None) -> str:
-    """Run one user turn. `history` is mutated in place with the full turn (assistant + tool results)."""
-    client = anthropic.Anthropic(api_key=api_key)
-    history.append({"role": "user", "content": question})
-    runner = client.beta.messages.tool_runner(
-        model=MODEL,
-        max_tokens=16000,
-        system=system,
-        cache_control={"type": "ephemeral"},
-        output_config={"effort": "medium"},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
+def ask(api_key: str, history: list[dict], question: str, tools: list[Callable], system: str,
+        model: str | None = None) -> tuple[str, list[str]]:
+    """One user turn. `history` holds {"role": "user"|"model", "text": ...}; returns (answer, tools called).
+
+    The SDK runs the tool calls itself (automatic function calling); overload errors are retried,
+    then the lighter model is tried, same as the news summary.
+    """
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        retry_options=types.HttpRetryOptions(attempts=3, initial_delay=1.0, max_delay=8.0,
+                                             http_status_codes=[429, 500, 502, 503, 504])))
+    contents = [types.Content(role=h["role"], parts=[types.Part(text=h["text"])]) for h in history]
+    contents.append(types.Content(role="user", parts=[types.Part(text=question)]))
+    config = types.GenerateContentConfig(
+        system_instruction=system,
         tools=tools,
-        messages=list(history),
-        max_iterations=8,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=8),
+        temperature=0.3,
     )
-    last = None
-    for message in runner:
-        last = message
-        history.append({"role": "assistant", "content": message.content})
-        if message.stop_reason in ("refusal", "max_tokens"):
-            break
-        for b in message.content:
-            if b.type == "tool_use" and on_tool:
-                on_tool(b.name, b.input)
-        response = runner.generate_tool_call_response()
-        if response is not None:
-            history.append(response)
-    if last is None:
-        return "응답을 받지 못했습니다."
-    if last.stop_reason == "max_tokens" and any(b.type == "tool_use" for b in last.content):
-        history.pop()  # 결과 없는 tool_use가 남으면 다음 질문이 거부되므로 보내기 전에 뺀다
-    if last.stop_reason == "refusal":
-        return "이 질문에는 답할 수 없었습니다. 질문을 바꿔서 다시 물어봐 주세요."
-    return "".join(b.text for b in last.content if b.type == "text").strip() or "(빈 응답)"
+    models = [model or DEFAULT_MODEL] + [m for m in FALLBACK_MODELS if m != (model or DEFAULT_MODEL)]
+    last_error: Exception | None = None
+    for m in models:
+        try:
+            response = client.models.generate_content(model=m, contents=contents, config=config)
+        except errors.APIError as e:
+            if e.code in (429, 500, 502, 503, 504, 404):
+                last_error = e
+                continue
+            raise
+        called = [f"{p.function_call.name}({', '.join(str(v) for v in (p.function_call.args or {}).values())})"
+                  for c in (response.automatic_function_calling_history or [])
+                  for p in (c.parts or []) if p.function_call]
+        answer = (response.text or "").strip() or "(빈 응답)"
+        history.append({"role": "user", "text": question})
+        history.append({"role": "model", "text": answer})
+        return answer, called
+    raise last_error  # type: ignore[misc]

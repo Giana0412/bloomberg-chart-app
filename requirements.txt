@@ -4,4 +4,3 @@ pandas>=2.2
 numpy>=1.26
 plotly>=5.24
 google-genai>=2.0
-anthropic>=1.13
