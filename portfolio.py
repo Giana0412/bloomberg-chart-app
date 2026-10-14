@@ -10,10 +10,36 @@ BENCH = "ACWI"  # WLS 지수는 Yahoo에 없어서 비슷한 전 세계 지수 E
 CAP = 20.0  # 단일 종목 상한 (% of notional)
 
 
-def sheet_csv_url(url_or_id: str) -> str:
+def sheet_id(url_or_id: str) -> str:
     m = re.search(r"/d/([A-Za-z0-9_-]+)", url_or_id)
-    sid = m.group(1) if m else url_or_id.strip()
-    return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv"
+    return m.group(1) if m else url_or_id.strip()
+
+
+def sheet_csv_url(url_or_id: str) -> str:
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id(url_or_id)}/export?format=csv"
+
+
+def _tab(url_or_id: str, name: str, need: set[str]) -> pd.DataFrame:
+    """A named tab (e.g. trades, watch). Empty if missing — gviz falls back to the first tab, so check columns."""
+    try:
+        df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/{sheet_id(url_or_id)}/gviz/tq?tqx=out:csv&sheet={name}")
+    except Exception:
+        return pd.DataFrame(columns=sorted(need))
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    is_positions_tab = {"amount_usd", "entry_date"} <= set(df.columns)  # gviz가 탭이 없어서 첫 탭을 돌려준 경우
+    return df if need <= set(df.columns) and not is_positions_tab else pd.DataFrame(columns=sorted(need))
+
+
+def read_trades(url_or_id: str) -> pd.DataFrame:
+    df = _tab(url_or_id, "trades", {"date", "action", "ticker", "realized_pnl"})
+    if not df.empty:
+        df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0)
+    return df
+
+
+def read_watch(url_or_id: str) -> list[str]:
+    df = _tab(url_or_id, "watch", {"ticker"})
+    return [str(t).strip().upper() for t in df.get("ticker", []) if str(t).strip() and str(t) != "nan"]
 
 
 def read_positions(url_or_id: str) -> pd.DataFrame:
@@ -30,8 +56,10 @@ def read_positions(url_or_id: str) -> pd.DataFrame:
     return df[df["amount_usd"] > 0]
 
 
-def value(positions: pd.DataFrame, closes: dict[str, pd.Series], start: pd.Timestamp) -> tuple[pd.DataFrame, dict]:
-    """closes: ticker -> daily close series in USD (benchmark included under BENCH)."""
+def value(positions: pd.DataFrame, closes: dict[str, pd.Series], start: pd.Timestamp,
+          realized: float = 0.0) -> tuple[pd.DataFrame, dict]:
+    """closes: ticker -> daily close series in USD (benchmark included under BENCH).
+    realized: 매도로 확정된 손익 합계 (현금에 더해진다)."""
     rows = []
     for _, p in positions.iterrows():
         s = closes.get(p["ticker"])
@@ -50,7 +78,7 @@ def value(positions: pd.DataFrame, closes: dict[str, pd.Series], start: pd.Times
     df = pd.DataFrame(rows)
     invested = float(df["amount_usd"].sum())
     mkt = float(df["value"].sum()) if "value" in df else 0.0
-    cash = NOTIONAL - invested
+    cash = NOTIONAL - invested + realized
     total = mkt + cash
     df["weight_now"] = df.get("value", 0) / total * 100
     df["cap_room"] = CAP - df.get("value", 0) / NOTIONAL * 100
@@ -62,7 +90,7 @@ def value(positions: pd.DataFrame, closes: dict[str, pd.Series], start: pd.Times
         if not bs.empty:
             bench_ret = (float(b.iloc[-1]) / float(bs.iloc[0]) - 1) * 100
     port_ret = (total / NOTIONAL - 1) * 100
-    summary = {"invested": invested, "cash": cash, "total": total, "port_ret": port_ret,
+    summary = {"invested": invested, "cash": cash, "realized": realized, "total": total, "port_ret": port_ret,
                "bench_ret": bench_ret, "rel": None if bench_ret is None else port_ret - bench_ret,
                "rel_usd": None if bench_ret is None else total - NOTIONAL * (1 + bench_ret / 100)}
     return df, summary

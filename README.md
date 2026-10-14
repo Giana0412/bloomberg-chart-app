@@ -36,3 +36,17 @@ CHAT_CONTEXT_DOC = "https://docs.google.com/document/d/…"       # 챗봇 배�
 ```
 
 포트폴리오 시트 첫 줄: `ticker, amount_usd, entry_price, entry_date, note`. `entry_price`가 비면 `entry_date` 종가를 씁니다.
+
+## 챗봇으로 거래 기록하기 (시트 쓰기)
+
+1. 포트폴리오 시트 → 확장 프로그램 → Apps Script → `apps_script/Code.gs` 내용을 붙여넣고 저장
+2. 프로젝트 설정(톱니바퀴) → 스크립트 속성 → `TOKEN` 추가 (긴 비밀 문자열)
+3. 배포 → 새 배포 → 유형 "웹 앱", 실행 "나", 액세스 "모든 사용자" → 배포 → 권한 허용
+4. Streamlit Secrets에 추가:
+
+```toml
+SHEET_WRITE_URL = "https://script.google.com/macros/s/…/exec"
+SHEET_WRITE_TOKEN = "2번의 TOKEN"
+```
+
+챗봇에 "ASML 전량 1690에 팔았어", "DDOG 10만 달러 샀어", "NVAX 레이더에 넣어줘"라고 말하면 제안이 뜨고, [확인]을 눌러야 시트(보유 종목·trades·watch 탭)에 반영됩니다.

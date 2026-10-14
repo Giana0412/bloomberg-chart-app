@@ -6,6 +6,8 @@ Secrets (Streamlit Cloud → App settings → Secrets, or .streamlit/secrets.tom
   GEMINI_API_KEY = "..."                  # AI 뉴스 요약 (Google AI Studio)
   GEMINI_MODEL = "gemini-flash-latest"     # 선택
   CHAT_CONTEXT_DOC = "<Google Doc URL>"    # 챗봇 배경 지식 (팀 전략 대화 기록)
+  SHEET_WRITE_URL = "<Apps Script 웹 앱 URL>"  # 챗봇으로 거래 기록 (apps_script/Code.gs)
+  SHEET_WRITE_TOKEN = "<Apps Script TOKEN>"
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import events
 import news
 import portfolio as pf
 import screen_import
+import trades
 from analysis import Analysis, analyze
 from plan import PLAN
 
@@ -237,8 +240,24 @@ def tab_charts() -> None:
 
 
 # ---------- portfolio tab ----------
+def sheet_url() -> str | None:
+    return secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
+
+
+def portfolio_state() -> tuple[pd.DataFrame, dict, dict, pd.DataFrame]:
+    """(valued positions, summary, closes, trade log) from the sheet."""
+    sheet = sheet_url()
+    pos = pf.read_positions(sheet)
+    log = pf.read_trades(sheet)
+    closes = {t: close_usd(t) for t in pos["ticker"].unique()}
+    closes[pf.BENCH] = close_usd(pf.BENCH)
+    realized = float(log["realized_pnl"].sum()) if not log.empty else 0.0
+    table, s = pf.value(pos, closes, CHALLENGE_START, realized)
+    return table, s, closes, log
+
+
 def tab_portfolio() -> None:
-    sheet = secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
+    sheet = sheet_url()
     if not sheet:
         st.info("팀 보유 종목을 적은 구글 시트 링크가 필요합니다. 시트는 '링크가 있는 모든 사용자: 뷰어'로 공유해야 읽을 수 있습니다.")
         url = st.text_input("구글 시트 링크", placeholder="https://docs.google.com/spreadsheets/d/…")
@@ -247,17 +266,13 @@ def tab_portfolio() -> None:
             st.rerun()
         return
     try:
-        pos = pf.read_positions(sheet)
+        table, s, closes, log = portfolio_state()
     except Exception as e:
         st.error(f"시트를 읽지 못했습니다. 공유 설정이 '링크가 있는 모든 사용자: 뷰어'인지, 첫 줄 열 이름이 맞는지 확인하세요. ({e})")
         return
-    if pos.empty:
+    if table.empty:
         st.warning("시트에 보유 종목이 없습니다.")
         return
-
-    closes = {t: close_usd(t) for t in pos["ticker"].unique()}
-    closes[pf.BENCH] = close_usd(pf.BENCH)
-    table, s = pf.value(pos, closes, CHALLENGE_START)
 
     c = st.columns(5)
     c[0].metric("총 평가액", f"${s['total']:,.0f}", f"{s['port_ret']:+.2f}%")
@@ -266,6 +281,8 @@ def tab_portfolio() -> None:
                 f"${s['rel_usd']:+,.0f}" if s["rel_usd"] is not None else None)
     c[3].metric("투자금", f"${s['invested']:,.0f}")
     c[4].metric("현금", f"${s['cash']:,.0f}", f"{s['cash'] / pf.NOTIONAL * 100:.1f}%", delta_color="off")
+    if s["realized"]:
+        st.caption(f"매도로 확정된 손익(실현 손익) {'+' if s['realized'] >= 0 else '−'}${abs(s['realized']):,.0f}이 현금에 반영돼 있습니다.")
     st.caption(f"지수 수익률은 대회 시작일({CHALLENGE_START:%m/%d}) 기준. 대회 벤치마크 WLS는 Yahoo에 없어 비슷한 전 세계 지수 ETF {pf.BENCH}로 대신 계산합니다. 매수가 칸이 비어 있으면 매수일 종가를 씁니다.")
 
     alerts, rows = [], []
@@ -335,7 +352,10 @@ def tab_portfolio() -> None:
                               legend=dict(orientation="h", y=-0.15), yaxis=dict(tickformat="$,.0f"))
             st.subheader("팀 vs 지수")
             st.plotly_chart(fig, width="stretch")
-    st.caption("보유 종목을 바꾸려면 구글 시트를 고치면 됩니다. 앱은 5분마다 새로 읽습니다.")
+    if not log.empty:
+        st.subheader("거래 일지")
+        st.dataframe(log.iloc[::-1], hide_index=True, width="stretch")
+    st.caption("보유 종목은 구글 시트를 직접 고치거나, 팀 챗봇에 '○○ 샀어/팔았어'라고 말하고 확인을 누르면 바뀝니다.")
 
 
 # ---------- earnings radar tab ----------
@@ -354,10 +374,11 @@ def import_screen(source: str | bytes, filename: str = "") -> pd.DataFrame:
 
 def team_tickers() -> set[str]:
     out = set(PLAN)
-    sheet = secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
+    sheet = sheet_url()
     if sheet:
         try:
             out |= set(pf.read_positions(sheet)["ticker"])
+            out |= set(pf.read_watch(sheet))
         except Exception:
             pass
     return out
@@ -523,22 +544,102 @@ def chat_context() -> str | None:
 
 
 def portfolio_text() -> str:
-    sheet = secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
-    if not sheet:
+    if not sheet_url():
         return "포트폴리오 시트가 설정되지 않음"
-    pos = pf.read_positions(sheet)
-    closes = {t: close_usd(t) for t in pos["ticker"].unique()}
-    closes[pf.BENCH] = close_usd(pf.BENCH)
-    table, s = pf.value(pos, closes, CHALLENGE_START)
+    table, s, _, log = portfolio_state()
     lines = [f"총 평가액 ${s['total']:,.0f} ({s['port_ret']:+.2f}%), 지수({pf.BENCH}) {s['bench_ret']:+.2f}%, "
-             f"지수 대비 {s['rel']:+.2f}%p, 현금 ${s['cash']:,.0f}"]
+             f"지수 대비 {s['rel']:+.2f}%p, 현금 ${s['cash']:,.0f}, 실현 손익 ${s['realized']:+,.0f}"]
     for _, r in table.iterrows():
         a, _ = analysis_for(r["ticker"])
         lines.append(f"- {r['ticker']}: 투자 ${r['amount_usd']:,.0f}, 매수가 {r.get('entry_used', float('nan')):.2f}, "
                      f"현재 {r.get('last', float('nan')):.2f}, 수익률 {r.get('ret', float('nan')):+.2f}%, "
                      f"비중 {r.get('weight_now', float('nan')):.1f}%"
                      + (f", 손절가 {a.stop:.2f}" if a else ""))
+    watch = pf.read_watch(sheet_url())
+    if watch:
+        lines.append("레이더 관심 종목: " + ", ".join(watch))
     return "\n".join(lines)
+
+
+def trade_tools() -> list:
+    """Chatbot tools that only PROPOSE sheet edits; the user confirms with a button."""
+    pending = st.session_state.setdefault("pending", [])
+
+    def propose_trade(action: str, ticker: str, amount_usd: float = 0.0, fraction: float = 0.0,
+                      price: float = 0.0, date: str = "") -> str:
+        """팀이 실제로 한 매수·매도를 포트폴리오 시트에 기록하자고 제안한다 (사용자가 확인 버튼을 눌러야 반영).
+
+        Args:
+            action: "buy" 또는 "sell".
+            ticker: Yahoo 티커.
+            amount_usd: 매수 금액 또는 매도 금액(달러). 매도에서 fraction을 쓰면 0.
+            fraction: 매도 비율 (0.5 = 절반, 1 = 전량). 매수에서는 0.
+            price: 체결가. 모르면 0 (현재가로 추정).
+            date: 거래일 YYYY-MM-DD. 모르면 빈 문자열(오늘).
+        """
+        if not (secret("SHEET_WRITE_URL") and secret("SHEET_WRITE_TOKEN")):
+            return "시트 쓰기가 설정되지 않아 기록할 수 없음 (SHEET_WRITE_URL / SHEET_WRITE_TOKEN)."
+        t = ticker.upper().strip()
+        est = price <= 0
+        if est:
+            s_ = close_usd(t)
+            if s_ is None:
+                return f"{t}: 가격을 찾지 못함. 체결가를 알려 달라고 해."
+            price = float(s_.iloc[-1])
+        table, *_ = portfolio_state()
+        try:
+            plan = trades.plan_trade(table, action, t, price, amount_usd, fraction, date or None, price_estimated=est)
+        except ValueError as e:
+            return f"기록 못 함: {e}"
+        if all(p["summary"] != plan.summary for p in pending):  # 재시도로 같은 제안이 두 번 들어오지 않게
+            pending.append({"summary": plan.summary, "ops": plan.ops})
+        return f"확인 대기: {plan.summary}"
+
+    def propose_watch(ticker: str, add: bool = True) -> str:
+        """실적 레이더 관심 종목에 넣거나 빼자고 제안한다 (사용자가 확인 버튼을 눌러야 반영).
+
+        Args:
+            ticker: Yahoo 티커.
+            add: True면 추가, False면 제외.
+        """
+        if not (secret("SHEET_WRITE_URL") and secret("SHEET_WRITE_TOKEN")):
+            return "시트 쓰기가 설정되지 않아 기록할 수 없음 (SHEET_WRITE_URL / SHEET_WRITE_TOKEN)."
+        plan = trades.plan_watch(pf.read_watch(sheet_url()), ticker, add)
+        if all(p["summary"] != plan.summary for p in pending):
+            pending.append({"summary": plan.summary, "ops": plan.ops})
+        return f"확인 대기: {plan.summary}"
+
+    return [propose_trade, propose_watch]
+
+
+def render_pending() -> None:
+    pending = st.session_state.get("pending", [])
+    if not pending:
+        return
+    with st.container(border=True):
+        st.markdown("**시트에 반영할 내용 (확인 전에는 바뀌지 않습니다)**")
+        for i, p in enumerate(pending, 1):
+            st.markdown(f"{i}. {p['summary']}")
+        c1, c2, _ = st.columns([1, 1, 4])
+        ok = c1.button("확인", type="primary", key="pending-ok")
+        cancel = c2.button("취소", key="pending-cancel")
+        if cancel:
+            st.session_state.pending = []
+            st.rerun()
+        if ok:
+            try:
+                ops = [op for p in pending for op in p["ops"]]
+                res = trades.send(secret("SHEET_WRITE_URL"), secret("SHEET_WRITE_TOKEN"), ops)
+            except Exception as e:
+                st.error(f"시트에 쓰지 못했습니다: {type(e).__name__}: {str(e)[:200]}")
+                return
+            if not res.get("ok"):
+                st.error(f"시트가 거부했습니다: {res.get('error')}")
+                return
+            st.session_state.pending = []
+            st.session_state.setdefault("chat_history", []).append(
+                {"role": "model", "text": "✅ 시트에 반영했습니다: " + " / ".join(p["summary"] for p in pending)})
+            st.rerun()
 
 
 def tab_chat() -> None:
@@ -555,6 +656,7 @@ def tab_chat() -> None:
             if m.get("tools"):
                 st.caption("조회: " + " · ".join(m["tools"]))
             st.markdown(m["text"])
+    render_pending()
     c1, c2 = st.columns([5, 1])
     if c2.button("대화 지우기") and hist:
         st.session_state.chat_history = []
@@ -573,7 +675,7 @@ def tab_chat() -> None:
     with st.chat_message("assistant"):
         try:
             with st.spinner("데이터 조회하고 생각하는 중"):
-                answer, called = chatbot.ask(key, hist, q, chatbot.make_tools(deps),
+                answer, called = chatbot.ask(key, hist, q, chatbot.make_tools(deps) + trade_tools(),
                                              chatbot.system_prompt(PLAN, ctx), secret("GEMINI_MODEL"))
         except Exception as e:
             code = getattr(e, "code", None)
@@ -588,6 +690,8 @@ def tab_chat() -> None:
         if called:
             st.caption("조회: " + " · ".join(called))
         st.markdown(answer)
+    if st.session_state.get("pending"):
+        st.rerun()  # 위쪽 확인 패널에 새 제안을 보여 준다
 
 
 # ---------- page ----------
