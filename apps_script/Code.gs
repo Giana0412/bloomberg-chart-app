@@ -13,6 +13,13 @@
 const POSITION_HEADER = ["ticker", "amount_usd", "entry_price", "entry_date", "note"];
 const TRADE_HEADER = ["date", "action", "ticker", "amount_usd", "price", "realized_pnl", "note"];
 
+// 브라우저로 웹 앱 주소를 열었을 때 설치가 됐는지 확인용
+function doGet() {
+  const hasToken = !!PropertiesService.getScriptProperties().getProperty("TOKEN");
+  return json_({ ok: true, message: "설치됨", token_set: hasToken,
+                 sheet: SpreadsheetApp.getActiveSpreadsheet().getName() });
+}
+
 function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
