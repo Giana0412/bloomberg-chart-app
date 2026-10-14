@@ -143,7 +143,15 @@ def news_box(t: str) -> None:
                 with st.spinner("Gemini가 요약하는 중"):
                     st.markdown(ai_summary(t, tuple(i["title"] for i in items), items))
             except Exception as e:
-                st.warning(f"AI 요약 실패: {type(e).__name__}: {str(e)[:200]}. 헤드라인을 직접 확인하세요.")
+                code = getattr(e, "code", None)
+                if code in (429, 503):
+                    st.warning("Gemini 서버가 지금 붐벼서 요약하지 못했습니다(예비 모델까지 시도함). 잠시 뒤 '다시 요약'을 눌러 주세요.")
+                elif code in (400, 401, 403):
+                    st.warning("Gemini API 키가 맞지 않거나 권한이 없습니다. 앱 Secrets의 GEMINI_API_KEY를 확인하세요.")
+                else:
+                    st.warning(f"AI 요약 실패: {type(e).__name__}: {str(e)[:200]}. 헤드라인을 직접 확인하세요.")
+                if st.button("다시 요약", key=f"rs-{t}"):
+                    st.rerun()
         else:
             st.caption("AI 요약을 쓰려면 앱 Secrets에 GEMINI_API_KEY를 넣으세요.")
         for i in items:
