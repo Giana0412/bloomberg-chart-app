@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -89,3 +90,73 @@ def send(url: str, token: str, ops: list[dict]) -> dict:
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as r:  # Apps Script answers after a redirect; urllib follows it
         return json.loads(r.read().decode())
+
+
+# ---------- Bloomberg 포트 현황 붙여넣기 ----------
+_SECTION = re.compile(r"\[(보유 중|체결 대기|청산 완료)\]")
+_BBG = r"([A-Z0-9]{1,6}(?:/[A-Z])? (?:US|UN|UW|UQ|TT|NA|LN|GY|GR|FP|JP|JT|HK|KS|CN|AU|SW|IM|SM))"
+
+
+def _num(s: str) -> float:
+    return float(s.replace(",", "").replace("+", ""))
+
+
+def parse_snapshot(text: str) -> dict:
+    """'[보유 중] TWLO US 138,524 / P&L -11,454 (-7.62%) ...' 형식의 블룸버그 현황 텍스트를 읽는다."""
+    parts = _SECTION.split(text)
+    sections = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+    held: dict[str, dict] = {}
+    for m in re.finditer(_BBG + r"\s+([\d,]+)\s*/\s*P&L\s*([+\-]?[\d,]+)", sections.get("보유 중", "")):
+        h = held.setdefault(m.group(1), {"value": 0.0, "pnl": 0.0})  # 같은 종목이 두 줄이면 합친다
+        h["value"] += _num(m.group(2))
+        h["pnl"] += _num(m.group(3))
+    closed = {m.group(1): _num(m.group(2))
+              for m in re.finditer(_BBG + r"\s+P&L\s*([+\-]?[\d,]+)", sections.get("청산 완료", ""))}
+    pending = {m.group(1): _num(m.group(2))
+               for m in re.finditer(_BBG + r"\s+([\d,]+)", sections.get("체결 대기", ""))}
+    head = {k: _num(v) for k, v in re.findall(r"(Rel P&L|P&L)\s*([+\-]?[\d,]+)", text.split("[")[0])}
+    return {"held": held, "closed": closed, "pending": pending, "header": head}
+
+
+def plan_snapshot(text: str, current: pd.DataFrame, logged_closed: set[str], to_yahoo,
+                  price_now, date: str | None = None) -> Plan:
+    """Sheet edits that make the positions tab match the pasted snapshot.
+
+    current: positions tab (ticker column). logged_closed: tickers whose sale is already in trades.
+    to_yahoo(bbg)->str|None, price_now(yahoo)->float|None.
+    """
+    snap = parse_snapshot(text)
+    if not snap["held"]:
+        raise ValueError("보유 종목을 읽지 못했습니다. '[보유 중] TWLO US 138,524 / P&L -11,454' 형식인지 확인하세요.")
+    date = date or dt.date.today().isoformat()
+    ops, lines, keep = [], [], set()
+    for bbg, h in snap["held"].items():
+        t = to_yahoo(bbg)
+        if not t:
+            raise ValueError(f"{bbg}를 Yahoo 티커로 바꾸지 못했습니다.")
+        keep.add(t)
+        cost = h["value"] - h["pnl"]  # 들어간 돈 = 평가액 − 손익
+        px = price_now(t)
+        entry = px * cost / h["value"] if px else None  # 지금 가격에서 수익률만큼 거꾸로 계산한 평균 단가
+        ops.append({"op": "upsert_position", "ticker": t, "amount_usd": round(cost, 2),
+                    "entry_price": round(entry, 4) if entry else "", "entry_date": date,
+                    "note": f"블룸버그 현황 {date} (평가 ${h['value']:,.0f}, P&L {h['pnl']:+,.0f})"})
+        lines.append(f"{t} 투자금 ${cost:,.0f} (평가 ${h['value']:,.0f}, P&L {h['pnl']:+,.0f})")
+    gone = [t for t in current["ticker"] if t not in keep]
+    ops += [{"op": "delete_position", "ticker": t} for t in gone]
+    for bbg, pnl in snap["closed"].items():
+        t = to_yahoo(bbg) or bbg
+        if t in logged_closed:
+            continue  # 이미 거래 일지에 있는 청산은 두 번 넣지 않는다
+        ops.append({"op": "append_trade", "date": date, "action": "sell", "ticker": t, "amount_usd": "",
+                    "price": "", "realized_pnl": pnl, "note": "블룸버그 현황에서 가져온 청산"})
+    summary = [f"보유 {len(keep)}종목으로 맞춤: " + " / ".join(lines)]
+    if gone:
+        summary.append("시트에서 뺄 종목: " + ", ".join(gone))
+    new_closed = {b: p for b, p in snap["closed"].items() if (to_yahoo(b) or b) not in logged_closed}
+    if new_closed:
+        summary.append("실현 손익 기록: " + ", ".join(f"{b} {p:+,.0f}" for b, p in new_closed.items())
+                       + f" (합계 {sum(new_closed.values()):+,.0f})")
+    if snap["pending"]:
+        summary.append("체결 대기(시트에는 아직 안 넣음): " + ", ".join(f"{b} ${v:,.0f}" for b, v in snap["pending"].items()))
+    return Plan("\n".join(summary), ops)

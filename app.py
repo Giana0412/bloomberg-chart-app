@@ -614,6 +614,42 @@ def trade_tools() -> list:
     return [propose_trade, propose_watch]
 
 
+def snapshot_from_chat(text: str, hist: list) -> None:
+    hist.append({"role": "user", "text": text})
+    with st.chat_message("assistant"):
+        if not (secret("SHEET_WRITE_URL") and secret("SHEET_WRITE_TOKEN")):
+            msg = ("포트 현황은 읽었지만 시트 쓰기가 아직 설정되지 않아 반영할 수 없습니다. "
+                   "Apps Script를 설치하고 Streamlit Secrets에 SHEET_WRITE_URL과 SHEET_WRITE_TOKEN을 넣어 주세요.")
+            st.warning(msg)
+            hist.append({"role": "model", "text": msg})
+            return
+        try:
+            current = pf.read_positions(sheet_url())
+            log = pf.read_trades(sheet_url())
+            logged = set(log.loc[log["action"] == "sell", "ticker"].astype(str)) if not log.empty else set()
+
+            def price_now(t: str) -> float | None:
+                s_ = close_usd(t)
+                return float(s_.iloc[-1]) if s_ is not None else None
+
+            plan = trades.plan_snapshot(text, current, logged,
+                                        lambda b: (screen_import.candidates(b) or [None])[0], price_now)
+        except Exception as e:
+            msg = f"포트 현황을 읽지 못했습니다: {e}"
+            st.error(msg)
+            hist.append({"role": "model", "text": msg})
+            return
+        snap = trades.parse_snapshot(text)
+        head = snap["header"]
+        msg = ("블룸버그 포트 현황을 읽었습니다. 아래 **확인**을 누르면 시트를 이 내용으로 맞춥니다.\n\n"
+               + "\n".join(f"- {line}" for line in plan.summary.split("\n"))
+               + (f"\n\n블룸버그 기준 P&L {head.get('P&L', 0):+,.0f}, Rel P&L {head.get('Rel P&L', 0):+,.0f}." if head else ""))
+        st.markdown(msg)
+        hist.append({"role": "model", "text": msg})
+        st.session_state.setdefault("pending", []).append({"summary": "블룸버그 포트 현황으로 시트 맞추기", "ops": plan.ops})
+    st.rerun()
+
+
 def render_pending() -> None:
     pending = st.session_state.get("pending", [])
     if not pending:
@@ -667,6 +703,9 @@ def tab_chat() -> None:
     if not q:
         return
     st.chat_message("user").markdown(q)
+    if "[보유 중]" in q:  # 블룸버그 포트 현황 붙여넣기는 AI 추측 없이 코드로 처리
+        snapshot_from_chat(q, hist)
+        return
     deps = {
         "analyze": lambda t: analysis_for(t)[0],
         "event": event,
