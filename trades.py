@@ -150,6 +150,9 @@ def plan_snapshot(text: str, current: pd.DataFrame, logged_closed: set[str], to_
             continue  # 이미 거래 일지에 있는 청산은 두 번 넣지 않는다
         ops.append({"op": "append_trade", "date": date, "action": "sell", "ticker": t, "amount_usd": "",
                     "price": "", "realized_pnl": pnl, "note": "블룸버그 현황에서 가져온 청산"})
+    head = snap["header"]
+    if "P&L" in head and "Rel P&L" in head:  # 순위 기준 숫자를 시트에 남겨 포트폴리오 탭에서 보여 준다
+        ops.append({"op": "append_snapshot", "date": date, "pnl": head["P&L"], "rel_pnl": head["Rel P&L"]})
     summary = [f"보유 {len(keep)}종목으로 맞춤: " + " / ".join(lines)]
     if gone:
         summary.append("시트에서 뺄 종목: " + ", ".join(gone))

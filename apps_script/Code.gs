@@ -7,11 +7,12 @@
  *       → 나온 웹 앱 URL과 TOKEN을 Streamlit Secrets에 SHEET_WRITE_URL / SHEET_WRITE_TOKEN 으로 넣기
  *
  * 앱(app)이 계산을 끝낸 결과만 보내므로 이 스크립트는 받은 대로 적기만 한다.
- * 받는 형식: {token, ops: [{op: "upsert_position"|"delete_position"|"append_trade"|"set_watch", ...}]}
+ * 받는 형식: {token, ops: [{op: "upsert_position"|"delete_position"|"append_trade"|"set_watch"|"append_snapshot", ...}]}
  */
 
 const POSITION_HEADER = ["ticker", "amount_usd", "entry_price", "entry_date", "note"];
 const TRADE_HEADER = ["date", "action", "ticker", "amount_usd", "price", "realized_pnl", "note"];
+const SNAPSHOT_HEADER = ["date", "pnl", "rel_pnl"];
 
 // 브라우저로 웹 앱 주소를 열었을 때 설치가 됐는지 확인용
 function doGet() {
@@ -34,6 +35,7 @@ function doPost(e) {
       else if (op.op === "delete_position") deletePosition_(ss, op.ticker);
       else if (op.op === "append_trade") appendTrade_(ss, op);
       else if (op.op === "set_watch") setWatch_(ss, op.tickers || []);
+      else if (op.op === "append_snapshot") sheet_(ss, "snapshots", SNAPSHOT_HEADER).appendRow([op.date, op.pnl, op.rel_pnl]);
       else throw new Error("unknown op: " + op.op);
       done.push(op.op + (op.ticker ? ":" + op.ticker : ""));
     });

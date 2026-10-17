@@ -37,6 +37,14 @@ def read_trades(url_or_id: str) -> pd.DataFrame:
     return df
 
 
+def read_snapshots(url_or_id: str) -> pd.DataFrame:
+    """블룸버그 현황을 붙여넣을 때 남긴 공식 P&L / Rel P&L 기록 (오래된 순)."""
+    df = _tab(url_or_id, "snapshots", {"date", "pnl", "rel_pnl"})
+    for c in ("pnl", "rel_pnl"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.dropna(subset=["pnl", "rel_pnl"])
+
+
 def read_watch(url_or_id: str) -> list[str]:
     df = _tab(url_or_id, "watch", {"ticker"})
     return [str(t).strip().upper() for t in df.get("ticker", []) if str(t).strip() and str(t) != "nan"]

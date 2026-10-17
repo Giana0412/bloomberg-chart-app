@@ -32,6 +32,9 @@ from plan import PLAN
 st.set_page_config(page_title="티커 차트 검색", page_icon="📈", layout="wide")
 
 CHALLENGE_START = pd.Timestamp("2026-10-12")
+SEMI_CAP = 30.0  # 팀 규칙: 반도체 합계 비중 상한 (%)
+CASH_WARN = 15.0  # 현금이 이보다 많으면 지수 바스켓 보관 규칙 알림 (%)
+SEMI_INDUSTRIES = {"Semiconductors", "Semiconductor Equipment & Materials"}
 LEVEL_COLOR = {"good": "green", "warn": "orange", "bad": "red", "info": "violet"}
 UNITS = {"USD": ("$", "달러"), "TWD": ("NT$", "대만달러"), "EUR": ("€", "유로"), "KRW": ("₩", "원"),
          "HKD": ("HK$", "홍콩달러"), "JPY": ("¥", "엔"), "GBP": ("£", "파운드"), "GBp": ("p", "펜스")}
@@ -77,6 +80,22 @@ def close_usd(ticker: str) -> pd.Series | None:
         return None
     rate = fx["Close"].reindex(s.index, method="ffill")
     return s * rate / (100 if pence else 1)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def industry(ticker: str) -> str:
+    try:
+        return yf.Ticker(ticker).info.get("industry") or ""
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def reaction(ticker: str) -> dict | None:
+    try:
+        return events.earnings_reaction(ticker)
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -269,6 +288,16 @@ def tab_charts() -> None:
 
 
 # ---------- portfolio tab ----------
+def short_note(note) -> str:
+    """'블룸버그 현황 2026-10-16 (평가 …, P&L …)' 같은 긴 자동 메모를 표에 맞게 줄인다."""
+    note = "" if pd.isna(note) else str(note)
+    m = re.match(r"블룸버그 현황 \d{4}-(\d{2})-(\d{2})", note)
+    if m:
+        return f"블룸버그 {m.group(1)}/{m.group(2)}"
+    return note if len(note) <= 20 else note[:19] + "…"
+
+
+
 def sheet_url() -> str | None:
     return secret("PORTFOLIO_SHEET") or st.session_state.get("sheet")
 
@@ -307,10 +336,29 @@ def tab_portfolio() -> None:
         close_usd.clear()
         st.rerun()
 
+    try:
+        snaps = pf.read_snapshots(sheet)
+    except Exception:
+        snaps = pd.DataFrame()
+    if not snaps.empty:
+        o = snaps.iloc[-1]
+        wls = (o["pnl"] - o["rel_pnl"]) / pf.NOTIONAL * 100  # 블룸버그 P&L − Rel P&L = 지수만큼 벌었을 손익
+        st.markdown(f"**블룸버그 공식 ({o['date']})**")
+        oc = st.columns(5)
+        oc[0].metric("P&L", f"${o['pnl']:+,.0f}", f"{o['pnl'] / pf.NOTIONAL * 100:+.2f}%")
+        oc[1].metric("Rel P&L (순위 기준)", f"${o['rel_pnl']:+,.0f}", f"{o['rel_pnl'] / pf.NOTIONAL * 100:+.2f}%p")
+        oc[2].metric("WLS 수익률 (역산)", f"{wls:+.2f}%")
+        if len(snaps) >= 2:
+            p_ = snaps.iloc[-2]
+            oc[3].metric("지난 기록 대비 Rel P&L", f"${o['rel_pnl'] - p_['rel_pnl']:+,.0f}", f"{p_['date']} 대비", delta_color="off")
+        st.caption("위 숫자는 블룸버그 현황을 챗봇에 붙여넣은 시점 기준이고, 아래 숫자는 Yahoo 시세로 매일 추정한 값입니다. "
+                   "순위는 블룸버그 Rel P&L로 정해집니다.")
+    else:
+        st.caption("블룸버그 공식 Rel P&L(순위 기준)을 보려면 팀 챗봇에 블룸버그 포트 현황([보유 중] …)을 붙여넣고 확인을 누르세요.")
     c = st.columns(5)
     c[0].metric("총 평가액", f"${s['total']:,.0f}", f"{s['port_ret']:+.2f}%")
     c[1].metric(f"지수({pf.BENCH}) 수익률", f"{s['bench_ret']:+.2f}%" if s["bench_ret"] is not None else "—")
-    c[2].metric("지수 대비 (순위 기준)", f"{s['rel']:+.2f}%p" if s["rel"] is not None else "—",
+    c[2].metric("지수 대비 (추정)", f"{s['rel']:+.2f}%p" if s["rel"] is not None else "—",
                 f"${s['rel_usd']:+,.0f}" if s["rel_usd"] is not None else None)
     c[3].metric("투자금", f"${s['invested']:,.0f}")
     c[4].metric("현금", f"${s['cash']:,.0f}", f"{s['cash'] / pf.NOTIONAL * 100:.1f}%", delta_color="off")
@@ -319,22 +367,41 @@ def tab_portfolio() -> None:
     st.caption(f"지수 수익률은 대회 시작일({CHALLENGE_START:%m/%d}) 기준. 대회 벤치마크 WLS는 Yahoo에 없어 비슷한 전 세계 지수 ETF {pf.BENCH}로 대신 계산합니다. 매수가 칸이 비어 있으면 매수일 종가를 씁니다.")
 
     alerts, rows = [], []
+    semi_value = 0.0
     for _, r in table.iterrows():
         t = r["ticker"]
-        a, _sym = (None, "$")
+        a, sym = (None, "$")
         try:
-            a, _sym = analysis_for(t)
+            a, sym = analysis_for(t)
         except Exception:
             pass
+        # 해외 종목은 차트 숫자가 현지 통화라서 표의 달러 가격에 맞춰 바꾼다
+        fx = r["last"] / a.last if a is not None and pd.notna(r.get("last")) and sym != "$" else 1.0
+        stop_usd = a.stop * fx if a is not None else None
+        rx = reaction(t)
+        # 실적 전부터 들고 있던 종목만 규칙 대상 (실적 뒤에 산 종목은 표에만 보여 준다)
+        held_through = rx is not None and not (pd.notna(r.get("entry_date")) and rx.get("day")
+                                               and r["entry_date"].date() >= rx["day"])
+        if held_through and rx["verdict"] != "판정 대기":
+            if rx["verdict"] == "매도":
+                alerts.append(("bad", f"{t}: 실적 반응 규칙 '매도' ({rx['day']:%m/%d}) — {rx.get('why', '')}"))
+            elif rx["until"] is not None and pd.Timestamp.today().normalize() >= rx["until"]:
+                alerts.append(("warn", f"{t}: 실적 후 보유 기한({rx['until']:%m/%d})이 됐습니다. 정리를 검토하세요."))
+            else:
+                alerts.append(("info", f"{t}: 실적 반응 규칙 '보유' — {rx.get('why', '')}"))
+        elif held_through:
+            alerts.append(("info", f"{t}: 실적 반응 판정 대기 — {rx.get('why', '반응 장이 아직 열리지 않음')}"))
+        if industry(t) in SEMI_INDUSTRIES and pd.notna(r.get("value")):
+            semi_value += r["value"]
         ev = event(t)
         ed = ev.get("earnings")
         vol, vr = volume(a) if a is not None else (None, None)
         dday = (ed - dt.date.today()).days if ed else None
         if a is not None:
             if a.last < a.stop:
-                alerts.append(("bad", f"{t}: 종가가 손절가({a.stop:,.1f}) 아래입니다. 정리를 검토하세요."))
+                alerts.append(("bad", f"{t}: 종가가 손절가({sym}{a.stop:,.1f}) 아래입니다. 정리를 검토하세요."))
             elif (a.last - a.stop) / a.last < 0.03:
-                alerts.append(("warn", f"{t}: 손절가({a.stop:,.1f})까지 3% 이내입니다."))
+                alerts.append(("warn", f"{t}: 손절가({sym}{a.stop:,.1f})까지 3% 이내입니다."))
         if "value" in r and pd.notna(r.get("value")) and r["value"] / pf.NOTIONAL * 100 >= 18:
             alerts.append(("warn", f"{t}: 1M 대비 {r['value'] / pf.NOTIONAL * 100:.1f}%로 20% 상한에 가깝습니다."))
         if dday is not None and 0 <= dday <= 3:
@@ -345,11 +412,23 @@ def tab_portfolio() -> None:
             "20% 상한 여유(%p)": r.get("cap_room"),
             "거래량": fmt_vol(vol), "거래량(평균 대비)": vr,
             "기준일": f"{a.asof:%m/%d}" if a is not None else "—",
-            "손절가": a.stop if a else None, "신호": " · ".join(s_ for _, s_ in (a.signals if a else [])[:3]),
+            "손절가($)": stop_usd,
+            "현지 가격": f"{sym}{a.last:,.1f} / 손절 {sym}{a.stop:,.1f}" if a is not None and sym != "$" else "",
+            "신호": " · ".join(s_ for _, s_ in (a.signals if a else [])[:3]),
             "실적": f"{ed:%m/%d} (D-{dday})" if ed and dday is not None and dday >= 0 else (f"{ed:%m/%d}" if ed else "—"),
-            "메모": r.get("note", ""),
+            "실적 규칙": f"{rx['verdict']} ({rx['day']:%m/%d})" if rx and rx.get("day") else ("판정 대기" if rx else ""),
+            "메모": short_note(r.get("note", "")),
         })
 
+    semi_pct = semi_value / s["total"] * 100
+    if semi_pct > SEMI_CAP:
+        alerts.append(("bad", f"반도체 합계 {semi_pct:.1f}% — 팀 규칙 {SEMI_CAP:.0f}%를 넘었습니다."))
+    elif semi_pct > SEMI_CAP - 5:
+        alerts.append(("warn", f"반도체 합계 {semi_pct:.1f}% — 팀 규칙 {SEMI_CAP:.0f}%에 가깝습니다."))
+    cash_pct = s["cash"] / s["total"] * 100
+    if cash_pct > CASH_WARN:
+        alerts.append(("warn", f"현금 {cash_pct:.1f}% (${s['cash']:,.0f}) — 지수가 오르면 현금만큼 뒤처집니다. "
+                               "들어갈 종목이 없으면 지수 바스켓에 보관하는 게 팀 규칙입니다."))
     if alerts:
         st.subheader("확인할 것")
         for k, msg in alerts:
@@ -363,9 +442,12 @@ def tab_portfolio() -> None:
         "손익($)": st.column_config.NumberColumn(format="%+,.0f"),
         "현재 비중(%)": st.column_config.NumberColumn(format="%.1f"),
         "20% 상한 여유(%p)": st.column_config.NumberColumn(format="%.1f"),
-        "손절가": st.column_config.NumberColumn(format="%.1f"),
+        "손절가($)": st.column_config.NumberColumn(format="%.2f", help="종가 기준. 해외 종목은 달러로 바꾼 값"),
+        "메모": st.column_config.TextColumn(width="small"),
         "거래량(평균 대비)": st.column_config.NumberColumn(format="%.1f배", help="최근 20일 평균 거래량 대비. 1.5배 이상이면 평소보다 관심이 큼"),
     })
+    st.caption(f"반도체 합계 {semi_pct:.1f}% (상한 {SEMI_CAP:.0f}%) · 현금 {cash_pct:.1f}%. "
+               "실적 규칙: 발표 뒤 첫 장 시가가 전날 종가 +2% 이상이고 1시간 뒤에도 시가 위면 '보유'(최대 5거래일), 아니면 '매도'. 실적 전부터 들고 있던 종목만 경고합니다.")
     st.caption("현재가·거래량은 Yahoo 기준 장중 약 15분 지연이고 5분마다 갱신됩니다. 장이 닫혀 있으면 기준일의 종가입니다. "
                "장중 거래량은 아직 쌓이는 중이라 평균 대비가 작게 나옵니다.")
 
@@ -591,11 +673,22 @@ def portfolio_text() -> str:
     lines = [f"총 평가액 ${s['total']:,.0f} ({s['port_ret']:+.2f}%), 지수({pf.BENCH}) {s['bench_ret']:+.2f}%, "
              f"지수 대비 {s['rel']:+.2f}%p, 현금 ${s['cash']:,.0f}, 실현 손익 ${s['realized']:+,.0f}"]
     for _, r in table.iterrows():
-        a, _ = analysis_for(r["ticker"])
+        a, sym = analysis_for(r["ticker"])
+        fx = r["last"] / a.last if a is not None and sym != "$" and pd.notna(r.get("last")) else 1.0
+        rx = reaction(r["ticker"])
         lines.append(f"- {r['ticker']}: 투자 ${r['amount_usd']:,.0f}, 매수가 {r.get('entry_used', float('nan')):.2f}, "
                      f"현재 {r.get('last', float('nan')):.2f}, 수익률 {r.get('ret', float('nan')):+.2f}%, "
                      f"비중 {r.get('weight_now', float('nan')):.1f}%"
-                     + (f", 손절가 {a.stop:.2f}" if a else ""))
+                     + (f", 손절가 ${a.stop * fx:.2f}" if a else "")
+                     + (f", 실적 반응 규칙 {rx['verdict']} ({rx.get('why', '')})" if rx else ""))
+    try:
+        snaps = pf.read_snapshots(sheet_url())
+    except Exception:
+        snaps = pd.DataFrame()
+    if not snaps.empty:
+        o = snaps.iloc[-1]
+        lines.insert(0, f"블룸버그 공식 ({o['date']}): P&L ${o['pnl']:+,.0f}, Rel P&L ${o['rel_pnl']:+,.0f} (순위 기준). "
+                        "아래 Yahoo 추정치보다 이 값을 우선해.")
     watch = pf.read_watch(sheet_url())
     if watch:
         lines.append("레이더 관심 종목: " + ", ".join(watch))
