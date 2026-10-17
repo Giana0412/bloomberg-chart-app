@@ -16,6 +16,7 @@ import re
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 
@@ -102,28 +103,52 @@ def analysis_for(t: str) -> tuple[Analysis | None, str]:
 
 
 # ---------- chart tab ----------
+def volume(a: Analysis) -> tuple[float | None, float | None]:
+    """(latest volume, ratio to the previous 20-day average). Intraday the latest bar is still filling up."""
+    v = a.df["Volume"].dropna() if "Volume" in a.df else pd.Series(dtype=float)
+    if len(v) < 21 or v.iloc[-1] <= 0:
+        return None, None
+    avg = v.iloc[-21:-1].mean()
+    return float(v.iloc[-1]), (float(v.iloc[-1] / avg) if avg > 0 else None)
+
+
+def fmt_vol(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{v / 1e6:,.1f}M" if v >= 1e6 else f"{v / 1e3:,.0f}K"
+
+
 def chart(a: Analysis) -> go.Figure:
     df = a.df.iloc[-126:]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df["BBU"], line=dict(width=0), hoverinfo="skip", showlegend=False))
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
+    fig.add_trace(go.Scatter(x=df.index, y=df["BBU"], line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["BBL"], line=dict(width=0), fill="tonexty",
-                             fillcolor="rgba(29,95,138,0.12)", name="볼린저밴드", hoverinfo="skip"))
+                             fillcolor="rgba(29,95,138,0.12)", name="볼린저밴드", hoverinfo="skip"), row=1, col=1)
     if a.sup:
         fig.add_hrect(y0=a.sup[0], y1=a.sup[1] if a.sup[1] > a.sup[0] else a.sup[0] * 1.003,
                       fillcolor="rgba(35,130,74,0.18)", line_width=0,
-                      annotation_text=f"바닥 {a.sup[0]:.1f}", annotation_position="right")
+                      annotation_text=f"바닥 {a.sup[0]:.1f}", annotation_position="right", row=1, col=1)
     if a.res:
         fig.add_hrect(y0=a.res[0], y1=a.res[1] if a.res[1] > a.res[0] else a.res[0] * 1.003,
                       fillcolor="rgba(184,56,42,0.16)", line_width=0,
-                      annotation_text=f"천장 {a.res[0]:.1f}", annotation_position="right")
+                      annotation_text=f"천장 {a.res[0]:.1f}", annotation_position="right", row=1, col=1)
     fig.add_hline(y=a.stop, line=dict(color="#b8382a", dash="dash", width=1.2),
-                  annotation_text=f"손절 {a.stop:.1f}", annotation_position="bottom left")
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], name="200일 평균", line=dict(color="#9a4fb0", width=1.2, dash="dot")))
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="50일 평균", line=dict(color="#1d5f8a", width=1.6)))
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="20일 평균", line=dict(color="#d29a1d", width=1.2)))
-    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="종가", line=dict(color="#18212c", width=2)))
-    fig.update_layout(height=340, margin=dict(l=8, r=8, t=8, b=8), hovermode="x unified",
-                      legend=dict(orientation="h", y=-0.12, font=dict(size=11)), yaxis=dict(side="right"))
+                  annotation_text=f"손절 {a.stop:.1f}", annotation_position="bottom left", row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], name="200일 평균", line=dict(color="#9a4fb0", width=1.2, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="50일 평균", line=dict(color="#1d5f8a", width=1.6)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="20일 평균", line=dict(color="#d29a1d", width=1.2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="종가", line=dict(color="#18212c", width=2)), row=1, col=1)
+    if "Volume" in df:
+        up = df["Close"] >= df["Close"].shift(1)
+        fig.add_trace(go.Bar(x=df.index, y=df["Volume"], name="거래량", showlegend=False,
+                             marker_color=["rgba(35,130,74,0.55)" if u else "rgba(184,56,42,0.55)" for u in up]),
+                      row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=a.df["Volume"].rolling(20).mean().iloc[-126:], name="거래량 20일 평균",
+                                 showlegend=False, line=dict(color="#5b6b7c", width=1)), row=2, col=1)
+    fig.update_layout(height=400, margin=dict(l=8, r=8, t=8, b=8), hovermode="x unified",
+                      legend=dict(orientation="h", y=-0.1, font=dict(size=11)))
+    fig.update_yaxes(side="right")
+    fig.update_yaxes(title_text="거래량", title_font=dict(size=10), row=2, col=1)
     return fig
 
 
@@ -169,19 +194,23 @@ def card(t: str, a: Analysis, plan: dict | None, sym: str) -> None:
     chg = (a.last / a.prev - 1) * 100
     head, btn = st.columns([5, 1])
     head.markdown(f"### {t} &nbsp; {sym}{a.last:,.2f} &nbsp; :{'green' if chg >= 0 else 'red'}[{chg:+.1f}%]")
-    head.caption((plan or {}).get("note", "검색으로 추가한 종목") + f" · 데이터 {a.asof:%Y-%m-%d}")
+    head.caption((plan or {}).get("note", "검색으로 추가한 종목") + f" · 데이터 {a.asof:%Y-%m-%d} (장중 약 15분 지연)")
     if btn.button("새로고침", key=f"r-{t}"):
         load.clear(t)
+        close_usd.clear(t)
         st.rerun()
     st.plotly_chart(chart(a), width="stretch", key=f"c-{t}")
     st.markdown(" ".join(f":{LEVEL_COLOR[k]}-badge[{s}]" for k, s in a.signals))
-    m = st.columns(6)
+    vol, vr = volume(a)
+    m = st.columns(7)
     m[0].metric("RSI", f"{a.rsi:.1f}")
     m[1].metric("5일", f"{a.r5:+.1f}%" if a.r5 is not None else "—")
     m[2].metric("6개월", f"{a.r126:+.1f}%" if a.r126 is not None else "—")
     m[3].metric("50일선 대비", f"{(a.last / a.ma50 - 1) * 100:+.1f}%" if a.ma50 else "—")
     m[4].metric("하루 변동폭", f"{a.atr / a.last * 100:.1f}%")
     m[5].metric("손절가", f"{sym}{a.stop:,.1f}", f"{(a.stop / a.last - 1) * 100:.1f}%", delta_color="off")
+    m[6].metric("거래량", fmt_vol(vol), f"20일 평균의 {vr:.1f}배" if vr else None, delta_color="off",
+                help="오늘 장중이면 아직 쌓이는 중이라 평균보다 작게 보입니다.")
     st.markdown(f"**쉽게 말하면** {a.easy}")
     st.info(f"**할 일** {a.todo}")
     news_box(t)
@@ -273,6 +302,10 @@ def tab_portfolio() -> None:
     if table.empty:
         st.warning("시트에 보유 종목이 없습니다.")
         return
+    if st.button("시세 새로고침", help="가격은 5분마다 자동으로 다시 받아옵니다. 바로 받으려면 누르세요."):
+        load.clear()
+        close_usd.clear()
+        st.rerun()
 
     c = st.columns(5)
     c[0].metric("총 평가액", f"${s['total']:,.0f}", f"{s['port_ret']:+.2f}%")
@@ -295,6 +328,7 @@ def tab_portfolio() -> None:
             pass
         ev = event(t)
         ed = ev.get("earnings")
+        vol, vr = volume(a) if a is not None else (None, None)
         dday = (ed - dt.date.today()).days if ed else None
         if a is not None:
             if a.last < a.stop:
@@ -309,6 +343,8 @@ def tab_portfolio() -> None:
             "종목": t, "투자금($)": r["amount_usd"], "매수가": r.get("entry_used"), "현재가": r.get("last"),
             "수익률(%)": r.get("ret"), "손익($)": r.get("pnl"), "현재 비중(%)": r.get("weight_now"),
             "20% 상한 여유(%p)": r.get("cap_room"),
+            "거래량": fmt_vol(vol), "거래량(평균 대비)": vr,
+            "기준일": f"{a.asof:%m/%d}" if a is not None else "—",
             "손절가": a.stop if a else None, "신호": " · ".join(s_ for _, s_ in (a.signals if a else [])[:3]),
             "실적": f"{ed:%m/%d} (D-{dday})" if ed and dday is not None and dday >= 0 else (f"{ed:%m/%d}" if ed else "—"),
             "메모": r.get("note", ""),
@@ -328,7 +364,10 @@ def tab_portfolio() -> None:
         "현재 비중(%)": st.column_config.NumberColumn(format="%.1f"),
         "20% 상한 여유(%p)": st.column_config.NumberColumn(format="%.1f"),
         "손절가": st.column_config.NumberColumn(format="%.1f"),
+        "거래량(평균 대비)": st.column_config.NumberColumn(format="%.1f배", help="최근 20일 평균 거래량 대비. 1.5배 이상이면 평소보다 관심이 큼"),
     })
+    st.caption("현재가·거래량은 Yahoo 기준 장중 약 15분 지연이고 5분마다 갱신됩니다. 장이 닫혀 있으면 기준일의 종가입니다. "
+               "장중 거래량은 아직 쌓이는 중이라 평균 대비가 작게 나옵니다.")
 
     # 포트폴리오 vs 지수 추이
     idx = closes[pf.BENCH].index if closes[pf.BENCH] is not None else None

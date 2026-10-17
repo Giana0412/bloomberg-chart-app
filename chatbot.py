@@ -40,7 +40,7 @@ def make_tools(deps: dict[str, Callable]) -> list[Callable]:
     calendar(start, end, min_cap)->DataFrame, headlines(ticker)->list[dict]."""
 
     def chart_analysis(ticker: str) -> str:
-        """현재 차트 상태: 가격, 추세, RSI, 손절가, 바닥·천장, 자동 신호, 쉬운 설명.
+        """현재 차트 상태: 가격(장중 약 15분 지연), 거래량, 추세, RSI, 손절가, 바닥·천장, 자동 신호, 쉬운 설명.
 
         Args:
             ticker: Yahoo 티커 (예: TWLO, 2330.TW).
@@ -49,8 +49,11 @@ def make_tools(deps: dict[str, Callable]) -> list[Callable]:
         if a is None:
             return f"{ticker}: 데이터를 찾지 못함"
         sig = ", ".join(s for _, s in a.signals) or "없음"
+        v = a.df["Volume"].dropna() if "Volume" in a.df else None
+        vol = (f"거래량 {v.iloc[-1]:,.0f} (20일 평균의 {v.iloc[-1] / v.iloc[-21:-1].mean():.1f}배), "
+               if v is not None and len(v) >= 21 and v.iloc[-21:-1].mean() > 0 else "")
         return (f"{a.ticker} {a.asof:%Y-%m-%d} 가격 {a.last:.2f} (전일 대비 {(a.last / a.prev - 1) * 100:+.1f}%), "
-                f"RSI {a.rsi:.1f}, 5일 {a.r5:+.1f}%, 6개월 {a.r126 if a.r126 is None else round(a.r126, 1)}%, "
+                f"{vol}RSI {a.rsi:.1f}, 5일 {a.r5:+.1f}%, 6개월 {a.r126 if a.r126 is None else round(a.r126, 1)}%, "
                 f"50일선 {a.ma50 and round(a.ma50, 2)}, 200일선 {a.ma200 and round(a.ma200, 2)}, "
                 f"손절가 {a.stop:.2f} ({(a.stop / a.last - 1) * 100:+.1f}%), 바닥 {a.sup}, 천장 {a.res}. "
                 f"신호: {sig}. 설명: {a.easy} 할 일: {a.todo}")
