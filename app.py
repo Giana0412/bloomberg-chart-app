@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -479,6 +480,70 @@ def tab_portfolio() -> None:
     st.caption("보유 종목은 구글 시트를 직접 고치거나, 팀 챗봇에 '○○ 샀어/팔았어'라고 말하고 확인을 누르면 바뀝니다.")
 
 
+# ---------- briefing tab ----------
+KST = ZoneInfo("Asia/Seoul")
+BRIEF_KINDS = {"conclusion": "오늘의 결론", "easy": "쉬운 설명", "agents": "에이전트 의견 (TradingAgents)"}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def briefings(sheet: str) -> pd.DataFrame:
+    return pf.read_briefings(sheet)
+
+
+def tg_to_md(text: str) -> str:
+    """텔레그램 Markdown(*굵게*)을 Streamlit Markdown(**굵게**)으로. 그대로 두면 기울임으로 보인다."""
+    return re.sub(r"(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])", r"**\1**", str(text))
+
+
+def briefing_banner() -> None:
+    """오늘 브리핑이 도착했으면 맨 위에 알림 (세션마다 토스트 한 번)."""
+    sheet = sheet_url()
+    if not sheet:
+        return
+    try:
+        df = briefings(sheet)
+    except Exception:
+        return
+    today = dt.datetime.now(KST).date().isoformat()
+    if df.empty or df.iloc[0]["date"] != today:
+        return
+    st.success(f"📬 오늘({today[5:].replace('-', '/')}) 아침 브리핑이 도착했습니다 — **브리핑** 탭에서 보세요.")
+    if not st.session_state.get("brief_toast") == today:
+        st.toast("📬 오늘 아침 브리핑 도착", icon="📈")
+        st.session_state.brief_toast = today
+
+
+def tab_briefing() -> None:
+    sheet = sheet_url()
+    if not sheet:
+        st.info("포트폴리오 시트가 연결되면 매일 아침 브리핑이 여기 뜹니다.")
+        return
+    try:
+        df = briefings(sheet)
+    except Exception as e:
+        st.error(f"브리핑을 읽지 못했습니다: {e}")
+        return
+    if df.empty:
+        st.info("아직 올라온 브리핑이 없습니다. 아침 자동화(06:00 KST)가 돌면 시트의 briefings 탭에 쌓이고 여기 보입니다.")
+        return
+    c1, c2 = st.columns([2, 5])
+    dates = list(dict.fromkeys(df["date"]))
+    day = c1.selectbox("날짜", dates, format_func=lambda d: f"{d} (오늘)" if d == dt.datetime.now(KST).date().isoformat() else d)
+    if c2.button("새로고침", key="brief-refresh"):
+        briefings.clear()
+        st.rerun()
+    rows = df[df["date"] == day]
+    kinds = [k for k in BRIEF_KINDS if k in set(rows["kind"])] + sorted(set(rows["kind"]) - set(BRIEF_KINDS))
+    for i, k in enumerate(kinds):
+        r = rows[rows["kind"] == k].iloc[0]
+        with st.expander(BRIEF_KINDS.get(k, k), expanded=(i == 0)):
+            st.markdown(tg_to_md(r["body"]))
+            upd = r.get("updated")
+            if isinstance(upd, str) and upd:
+                st.caption(f"올라온 시각: {upd[:16].replace('T', ' ')}")
+    st.caption("텔레그램 그룹으로 가는 브리핑과 같은 내용입니다. 에이전트 의견은 검증 안 된 LLM 의견이라 모델 북을 바꾸는 근거가 아닙니다.")
+
+
 # ---------- earnings radar tab ----------
 @st.cache_data(ttl=21600, show_spinner=False)
 def calendar(start: dt.date, end: dt.date, min_cap: float) -> pd.DataFrame:
@@ -870,11 +935,14 @@ def tab_chat() -> None:
 # ---------- page ----------
 st.title("티커 차트 검색")
 st.caption("Bloomberg Trading Challenge 팀 도구 · Yahoo Finance 데이터 (장중 약 15분 지연, 5분마다 갱신) · 신호와 설명은 숫자에서 규칙으로 자동 작성됩니다")
-t1, t2, t3, t4 = st.tabs(["차트 검색", "포트폴리오", "실적 레이더", "팀 챗봇"])
+briefing_banner()
+t1, t2, tb, t3, t4 = st.tabs(["차트 검색", "포트폴리오", "브리핑", "실적 레이더", "팀 챗봇"])
 with t1:
     tab_charts()
 with t2:
     tab_portfolio()
+with tb:
+    tab_briefing()
 with t3:
     tab_radar()
 with t4:

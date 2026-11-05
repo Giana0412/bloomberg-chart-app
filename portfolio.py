@@ -45,6 +45,19 @@ def read_snapshots(url_or_id: str) -> pd.DataFrame:
     return df.dropna(subset=["pnl", "rel_pnl"])
 
 
+def read_briefings(url_or_id: str) -> pd.DataFrame:
+    """매일 아침 자동화(quant_auto 체인)가 올리는 브리핑 (최신 순). kind: conclusion / easy / agents."""
+    df = _tab(url_or_id, "briefings", {"date", "kind", "body"})
+    df = df.dropna(subset=["date", "body"]).copy()
+    # 시트가 날짜로 바꿔 버린 줄("2026. 11. 6" 등)도 YYYY-MM-DD 로 되돌린다
+    iso = df["date"].astype(str).str.strip().str[:10]
+    parsed = pd.to_datetime(df["date"].astype(str).str.replace(r"\.\s*", "-", regex=True).str.rstrip("-"),
+                            errors="coerce")
+    df["date"] = iso.where(iso.str.match(r"^\d{4}-\d{2}-\d{2}$"), parsed.dt.strftime("%Y-%m-%d"))
+    df = df.dropna(subset=["date"])
+    return df.sort_values("date", ascending=False, kind="stable")
+
+
 def read_watch(url_or_id: str) -> list[str]:
     df = _tab(url_or_id, "watch", {"ticker"})
     return [str(t).strip().upper() for t in df.get("ticker", []) if str(t).strip() and str(t) != "nan"]
