@@ -1,0 +1,28 @@
+# 블룸버그 터미널풍 다크 테마. 색 값은 theme.py 의 상수와 같게 유지한다
+# (CSS·Plotly 는 theme.py 가, 위젯·표·알림 색은 이 파일이 칠한다).
+[theme]
+base = "dark"
+primaryColor = "#FF9F1C"
+backgroundColor = "#050505"
+secondaryBackgroundColor = "#111111"
+textColor = "#E6E6E6"
+linkColor = "#4FA3FF"
+borderColor = "#262626"
+dataframeBorderColor = "#1E1E1E"
+dataframeHeaderBackgroundColor = "#141414"
+dataframeHeaderTextColor = "#FF9F1C"
+showWidgetBorder = true
+baseRadius = "0.15rem"
+buttonRadius = "0.15rem"
+redColor = "#FF4D4D"
+greenColor = "#2FD47A"
+orangeColor = "#FF9F1C"
+yellowColor = "#F5C451"
+blueColor = "#4FA3FF"
+violetColor = "#B48CFF"
+grayColor = "#8C8C8C"
+font = "IBM Plex Sans KR:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap, sans-serif"
+headingFont = "IBM Plex Sans KR:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap, sans-serif"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap, monospace"
+metricValueFontSize = "1.45rem"
+chartCategoricalColors = ["#FF9F1C", "#4FA3FF", "#2FD47A", "#B48CFF", "#F5C451", "#FF4D4D", "#8C8C8C"]

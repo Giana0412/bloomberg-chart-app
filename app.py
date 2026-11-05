@@ -12,6 +12,7 @@ Secrets (Streamlit Cloud → App settings → Secrets, or .streamlit/secrets.tom
 from __future__ import annotations
 
 import datetime as dt
+import html
 import re
 from zoneinfo import ZoneInfo
 
@@ -26,11 +27,13 @@ import events
 import news
 import portfolio as pf
 import screen_import
+import theme
 import trades
 from analysis import Analysis, analyze
 from plan import PLAN
 
-st.set_page_config(page_title="티커 차트 검색", page_icon="📈", layout="wide")
+st.set_page_config(page_title="BTC 팀 터미널", page_icon="📈", layout="wide")
+theme.apply()
 
 CHALLENGE_START = pd.Timestamp("2026-10-12")
 SEMI_CAP = 30.0  # 팀 규칙: 반도체 합계 비중 상한 (%)
@@ -143,28 +146,28 @@ def chart(a: Analysis) -> go.Figure:
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
     fig.add_trace(go.Scatter(x=df.index, y=df["BBU"], line=dict(width=0), hoverinfo="skip", showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["BBL"], line=dict(width=0), fill="tonexty",
-                             fillcolor="rgba(29,95,138,0.12)", name="볼린저밴드", hoverinfo="skip"), row=1, col=1)
+                             fillcolor=theme.rgba(theme.BLUE, 0.08), name="볼린저밴드", hoverinfo="skip"), row=1, col=1)
     if a.sup:
         fig.add_hrect(y0=a.sup[0], y1=a.sup[1] if a.sup[1] > a.sup[0] else a.sup[0] * 1.003,
-                      fillcolor="rgba(35,130,74,0.18)", line_width=0,
+                      fillcolor=theme.rgba(theme.GREEN, 0.13), line_width=0,
                       annotation_text=f"바닥 {a.sup[0]:.1f}", annotation_position="right", row=1, col=1)
     if a.res:
         fig.add_hrect(y0=a.res[0], y1=a.res[1] if a.res[1] > a.res[0] else a.res[0] * 1.003,
-                      fillcolor="rgba(184,56,42,0.16)", line_width=0,
+                      fillcolor=theme.rgba(theme.RED, 0.13), line_width=0,
                       annotation_text=f"천장 {a.res[0]:.1f}", annotation_position="right", row=1, col=1)
-    fig.add_hline(y=a.stop, line=dict(color="#b8382a", dash="dash", width=1.2),
+    fig.add_hline(y=a.stop, line=dict(color=theme.RED, dash="dash", width=1.2),
                   annotation_text=f"손절 {a.stop:.1f}", annotation_position="bottom left", row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], name="200일 평균", line=dict(color="#9a4fb0", width=1.2, dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="50일 평균", line=dict(color="#1d5f8a", width=1.6)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="20일 평균", line=dict(color="#d29a1d", width=1.2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="종가", line=dict(color="#18212c", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], name="200일 평균", line=dict(color=theme.VIOLET, width=1.2, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="50일 평균", line=dict(color=theme.BLUE, width=1.6)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="20일 평균", line=dict(color=theme.AMBER, width=1.2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="종가", line=dict(color="#F2F2F2", width=2)), row=1, col=1)
     if "Volume" in df:
         up = df["Close"] >= df["Close"].shift(1)
         fig.add_trace(go.Bar(x=df.index, y=df["Volume"], name="거래량", showlegend=False,
-                             marker_color=["rgba(35,130,74,0.55)" if u else "rgba(184,56,42,0.55)" for u in up]),
+                             marker_color=[theme.rgba(theme.GREEN, 0.55) if u else theme.rgba(theme.RED, 0.55) for u in up]),
                       row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=a.df["Volume"].rolling(20).mean().iloc[-126:], name="거래량 20일 평균",
-                                 showlegend=False, line=dict(color="#5b6b7c", width=1)), row=2, col=1)
+                                 showlegend=False, line=dict(color="#6B6B6B", width=1)), row=2, col=1)
     fig.update_layout(height=400, margin=dict(l=8, r=8, t=8, b=8), hovermode="x unified",
                       legend=dict(orientation="h", y=-0.1, font=dict(size=11)))
     fig.update_yaxes(side="right")
@@ -219,7 +222,7 @@ def card(t: str, a: Analysis, plan: dict | None, sym: str) -> None:
         load.clear(t)
         close_usd.clear(t)
         st.rerun()
-    st.plotly_chart(chart(a), width="stretch", key=f"c-{t}")
+    st.plotly_chart(chart(a), width="stretch", key=f"c-{t}", theme=None)
     st.markdown(" ".join(f":{LEVEL_COLOR[k]}-badge[{s}]" for k, s in a.signals))
     vol, vr = volume(a)
     m = st.columns(7)
@@ -231,8 +234,8 @@ def card(t: str, a: Analysis, plan: dict | None, sym: str) -> None:
     m[5].metric("손절가", f"{sym}{a.stop:,.1f}", f"{(a.stop / a.last - 1) * 100:.1f}%", delta_color="off")
     m[6].metric("거래량", fmt_vol(vol), f"20일 평균의 {vr:.1f}배" if vr else None, delta_color="off",
                 help="오늘 장중이면 아직 쌓이는 중이라 평균보다 작게 보입니다.")
-    st.markdown(f"**쉽게 말하면** {a.easy}")
-    st.info(f"**할 일** {a.todo}")
+    st.markdown(f"**쉽게 말하면** {no_strike(a.easy)}")
+    st.info(f"**할 일** {no_strike(a.todo)}")
     news_box(t)
 
 
@@ -468,12 +471,12 @@ def tab_portfolio() -> None:
                 total += held.where(idx >= start, r["amount_usd"])
             b = closes[pf.BENCH].reindex(idx)
             bench = pf.NOTIONAL * b / b.iloc[0]
-            fig = go.Figure([go.Scatter(x=idx, y=total, name="우리 팀", line=dict(color="#1d5f8a", width=2.2)),
-                             go.Scatter(x=idx, y=bench, name=f"지수({pf.BENCH})", line=dict(color="#9aa8b8", width=1.6, dash="dot"))])
+            fig = go.Figure([go.Scatter(x=idx, y=total, name="우리 팀", line=dict(color=theme.AMBER, width=2.2)),
+                             go.Scatter(x=idx, y=bench, name=f"지수({pf.BENCH})", line=dict(color=theme.MUTED, width=1.6, dash="dot"))])
             fig.update_layout(height=300, margin=dict(l=8, r=8, t=8, b=8), hovermode="x unified",
                               legend=dict(orientation="h", y=-0.15), yaxis=dict(tickformat="$,.0f"))
             st.subheader("팀 vs 지수")
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, width="stretch", theme=None)
     if not log.empty:
         st.subheader("거래 일지")
         st.dataframe(log.iloc[::-1], hide_index=True, width="stretch")
@@ -490,9 +493,33 @@ def briefings(sheet: str) -> pd.DataFrame:
     return pf.read_briefings(sheet)
 
 
+def no_strike(text) -> str:
+    """'15~20%' 의 물결표가 Streamlit 에선 취소선이 된다 — 글자 그대로 보이게."""
+    return str(text).replace("~", "\\~")
+
+
 def tg_to_md(text: str) -> str:
     """텔레그램 Markdown(*굵게*)을 Streamlit Markdown(**굵게**)으로. 그대로 두면 기울임으로 보인다."""
-    return re.sub(r"(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])", r"**\1**", str(text))
+    # 물결표는 Streamlit 에서 취소선이다 — '15~20%' 가 줄 그어져 보인다. 글자 그대로 보이게 이스케이프한다.
+    text = no_strike(text)
+    # 앞뒤에 한글이 붙어도('*종목 후보*뿐') 텔레그램에선 굵게다 — 이웃한 * 만 제외한다
+    return re.sub(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)", r"**\1**", str(text))
+
+
+def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """텔레그램 결론을 (제목, [(절 이름, 괄호 설명, 본문)])로 나눈다. 절은 '*레짐*' 처럼 굵은 글씨로 시작하는 줄."""
+    title, sections, cur = "", [], None
+    for line in str(body).splitlines():
+        m = re.match(r"^\*([^*\n]{1,30})\*\s*(\(.*\))?\s*$", line.strip())
+        if m:
+            cur = [m.group(1).strip(), (m.group(2) or "").strip(), []]
+            sections.append(cur)
+        elif cur is None:
+            if line.strip() and not title:
+                title = re.sub(r"[*_`]", "", line).strip()
+        else:
+            cur[2].append(line)
+    return title, [(h, n, "\n".join(t).strip()) for h, n, t in sections if "\n".join(t).strip()]
 
 
 def briefing_banner() -> None:
@@ -526,7 +553,7 @@ def tab_briefing() -> None:
     if df.empty:
         st.info("아직 올라온 브리핑이 없습니다. 아침 자동화(06:00 KST)가 돌면 시트의 briefings 탭에 쌓이고 여기 보입니다.")
         return
-    c1, c2 = st.columns([2, 5])
+    c1, c2 = st.columns([2, 5], vertical_alignment="bottom")
     dates = list(dict.fromkeys(df["date"]))
     day = c1.selectbox("날짜", dates, format_func=lambda d: f"{d} (오늘)" if d == dt.datetime.now(KST).date().isoformat() else d)
     if c2.button("새로고침", key="brief-refresh"):
@@ -534,13 +561,26 @@ def tab_briefing() -> None:
         st.rerun()
     rows = df[df["date"] == day]
     kinds = [k for k in BRIEF_KINDS if k in set(rows["kind"])] + sorted(set(rows["kind"]) - set(BRIEF_KINDS))
-    for i, k in enumerate(kinds):
-        r = rows[rows["kind"] == k].iloc[0]
-        with st.expander(BRIEF_KINDS.get(k, k), expanded=(i == 0)):
-            st.markdown(tg_to_md(r["body"]))
-            upd = r.get("updated")
-            if isinstance(upd, str) and upd:
-                st.caption(f"올라온 시각: {upd[:16].replace('T', ' ')}")
+    upd = next((str(u) for u in rows.get("updated", []) if isinstance(u, str) and u), "")
+    title, _ = split_sections(rows[rows["kind"] == kinds[0]].iloc[0]["body"]) if kinds else ("", [])
+    st.markdown(f"""<div class="brief-top"><span class="tag">BRIEF</span><span class="big">{html.escape(title or day)}</span>
+<span class="muted">{'올라온 시각 ' + upd[:16].replace('T', ' ') if upd else ''}</span></div>""", unsafe_allow_html=True)
+    labels = [BRIEF_KINDS.get(k, k) for k in kinds]
+    for k, sub in zip(kinds, st.tabs(labels) if len(kinds) > 1 else [st.container()]):
+        with sub:
+            body = rows[rows["kind"] == k].iloc[0]["body"]
+            _, sections = split_sections(body) if k == "conclusion" else ("", [])
+            if not sections:
+                with st.container(border=True, key=f"brief-{k}"):
+                    # 카드 안의 '# 제목' 은 페이지 제목만큼 커진다 — 한 단계 작은 제목으로
+                    st.markdown(re.sub(r"(?m)^#{1,2} ", "#### ", tg_to_md(body)))
+                continue
+            cols = st.columns(2)
+            for i, (head, note, text) in enumerate(sections):
+                with cols[i % 2].container(border=True, key=f"brief-{k}-{i}"):
+                    st.markdown(f'<div class="brief-h">{html.escape(head.upper())} <span>{html.escape(note)}</span></div>',
+                                unsafe_allow_html=True)
+                    st.markdown(tg_to_md(text).replace("\n", "  \n"))  # 텔레그램 줄바꿈을 그대로
     st.caption("텔레그램 그룹으로 가는 브리핑과 같은 내용입니다. 에이전트 의견은 검증 안 된 LLM 의견이라 모델 북을 바꾸는 근거가 아닙니다.")
 
 
@@ -890,7 +930,7 @@ def tab_chat() -> None:
         with st.chat_message("user" if m["role"] == "user" else "assistant"):
             if m.get("tools"):
                 st.caption("조회: " + " · ".join(m["tools"]))
-            st.markdown(m["text"])
+            st.markdown(no_strike(m["text"]))
     render_pending()
     c1, c2 = st.columns([5, 1])
     if c2.button("대화 지우기") and hist:
@@ -927,22 +967,23 @@ def tab_chat() -> None:
         hist[-1]["tools"] = called
         if called:
             st.caption("조회: " + " · ".join(called))
-        st.markdown(answer)
+        st.markdown(no_strike(answer))
     if st.session_state.get("pending"):
         st.rerun()  # 위쪽 확인 패널에 새 제안을 보여 준다
 
 
 # ---------- page ----------
-st.title("티커 차트 검색")
-st.caption("Bloomberg Trading Challenge 팀 도구 · Yahoo Finance 데이터 (장중 약 15분 지연, 5분마다 갱신) · 신호와 설명은 숫자에서 규칙으로 자동 작성됩니다")
+theme.header()
 briefing_banner()
 t1, t2, tb, t3, t4 = st.tabs(["차트 검색", "포트폴리오", "브리핑", "실적 레이더", "팀 챗봇"])
+# 탭은 화면 순서와 상관없이 채울 수 있다. 브리핑은 시트 한 번 읽기라 가볍고, 포트폴리오는
+# 종목마다 Yahoo 를 여러 번 부르느라 느리다 — 포트폴리오를 먼저 그리면 그동안 브리핑 탭이 비어 보인다.
 with t1:
     tab_charts()
-with t2:
-    tab_portfolio()
 with tb:
     tab_briefing()
+with t2:
+    tab_portfolio()
 with t3:
     tab_radar()
 with t4:
